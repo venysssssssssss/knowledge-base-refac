@@ -44,7 +44,8 @@ read -p "📥 Download Mistral 7B model now? (y/N): " download_model
 
 if [[ $download_model =~ ^[Yy]$ ]]; then
     echo "🔄 Downloading Mistral 7B AWQ model..."
-    ./scripts/download_model.sh
+    cd "$(dirname "$0")" && ./download_model.sh
+    cd - > /dev/null
 else
     echo "⏭️  Skipping model download. Run ./scripts/download_model.sh later."
 fi

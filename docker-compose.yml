@@ -1,5 +1,3 @@
-version: '3.8'
-
 services:
   # Vector Database
   qdrant:
@@ -21,7 +19,7 @@ services:
     image: redis:7-alpine
     container_name: redis
     ports:
-      - "6379:6379"
+      - "6380:6379"  # Changed to avoid conflict with existing Redis
     volumes:
       - ./data/redis:/data
     networks:

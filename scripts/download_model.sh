@@ -1,9 +1,9 @@
 #!/bin/bash
 
-# Download Mistral 7B AWQ Model
-# This script downloads the optimized AWQ quantized version
+# Download Mistral 7B Model
+# This script downloads the official Mistral 7B Instruct v0.2 model
 
-echo "🚀 Downloading Mistral 7B AWQ Model..."
+echo "🚀 Downloading Mistral 7B Model..."
 
 # Create models directory
 mkdir -p models
@@ -12,9 +12,9 @@ mkdir -p models
 echo "Installing Hugging Face CLI..."
 pip install huggingface_hub[cli]
 
-echo "Downloading Mistral 7B Instruct AWQ..."
+echo "Downloading Mistral 7B Instruct v0.2..."
 huggingface-cli download \
-    TheBloke/Mistral-7B-Instruct-v0.2-AWQ \
+    mistralai/Mistral-7B-Instruct-v0.2 \
     --local-dir ./models/mistral-7b-instruct-v0.2 \
     --local-dir-use-symlinks False
 

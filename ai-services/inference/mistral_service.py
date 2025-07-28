@@ -43,11 +43,11 @@ async def lifespan(app: FastAPI):
     # Configure engine arguments
     engine_args = AsyncEngineArgs(
         model="models/mistral-7b-instruct-v0.2",  # Update path as needed
-        quantization="awq",  # Use AWQ quantization
-        gpu_memory_utilization=0.92,
+        # quantization="awq",  # Disabled for base model
+        gpu_memory_utilization=0.85,  # Reduced for unquantized model
         max_model_len=4096,
         enable_chunked_prefill=True,
-        max_num_seqs=40,
+        max_num_seqs=20,  # Reduced for unquantized model
         tensor_parallel_size=1,  # Single GPU
         trust_remote_code=True
     )
@@ -147,8 +147,8 @@ async def get_stats():
     return {
         "model": "mistral-7b-instruct",
         "status": "running",
-        "max_sequences": 40,
-        "gpu_memory_utilization": 0.92
+        "max_sequences": 20,
+        "gpu_memory_utilization": 0.85
     }
 
 if __name__ == "__main__":
