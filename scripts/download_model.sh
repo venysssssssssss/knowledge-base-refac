@@ -8,15 +8,12 @@ echo "🚀 Downloading Mistral 7B Model..."
 # Create models directory
 mkdir -p models
 
-# Option 1: Using huggingface-cli (recommended)
-echo "Installing Hugging Face CLI..."
-pip install huggingface_hub[cli]
+# Install git lfs if not available
+echo "📦 Installing git lfs..."
+git lfs install
 
-echo "Downloading Mistral 7B Instruct v0.2..."
-huggingface-cli download \
-    mistralai/Mistral-7B-Instruct-v0.2 \
-    --local-dir ./models/mistral-7b-instruct-v0.2 \
-    --local-dir-use-symlinks False
+echo "Downloading Mistral 7B Instruct v0.2 via git..."
+git clone https://huggingface.co/mistralai/Mistral-7B-Instruct-v0.2 ./models/mistral-7b-instruct-v0.2
 
 # Alternative Option 2: Using git lfs (if preferred)
 # git lfs install
