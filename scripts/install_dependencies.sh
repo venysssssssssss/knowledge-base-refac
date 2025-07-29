@@ -14,26 +14,24 @@ poetry add pillow
 poetry add transformers
 poetry add torch
 
-# Install ByteDance Dolphin for document parsing (optional)
-echo "🐬 Installing ByteDance Dolphin for document parsing..."
-echo "Note: You can also clone and setup Dolphin manually from https://github.com/ByteDance/Dolphin"
+# Install ByteDance Dolphin for document parsing
+echo "🐬 Setting up ByteDance Dolphin for document parsing..."
 
-# Create directory for Dolphin if not exists
-if [ ! -d "./external/dolphin" ]; then
-    echo "📁 Creating directory for external Dolphin..."
-    mkdir -p ./external/dolphin
-    
-    echo "📥 Cloning ByteDance Dolphin repository..."
-    cd ./external/dolphin
-    git clone https://github.com/ByteDance/Dolphin.git .
-    
-    # Install Dolphin requirements if available
-    if [ -f "requirements.txt" ]; then
-        echo "📦 Installing Dolphin requirements..."
-        pip install -r requirements.txt
-    fi
-    
-    cd ../../..
+# Initialize and update submodules if not done yet
+if [ ! -f "./external/dolphin/README.md" ]; then
+    echo "� Initializing Dolphin submodule..."
+    git submodule init
+    git submodule update
+else
+    echo "✅ Dolphin submodule already initialized"
+fi
+
+# Install Dolphin requirements if available
+if [ -f "./external/dolphin/requirements.txt" ]; then
+    echo "📦 Installing Dolphin requirements..."
+    poetry run pip install -r ./external/dolphin/requirements.txt
+else
+    echo "⚠️ Dolphin requirements.txt not found, skipping..."
 fi
 
 echo "✅ Dependencies installation completed!"
