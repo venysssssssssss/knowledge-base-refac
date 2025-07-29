@@ -301,7 +301,7 @@ async def upload_pdf(file: UploadFile = File(...)):
         logger.info(f"Created {len(chunks)} chunks for {file.filename}")
         
         # Generate embeddings
-        embeddings = await processor.generate_embeddings(chunks)
+        embeddings = await processor.generate_embeddings([chunk.content for chunk in chunks])
         
         # Store in Qdrant
         await processor.store_in_qdrant(chunks, embeddings, document_id)
