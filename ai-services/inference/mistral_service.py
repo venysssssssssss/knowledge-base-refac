@@ -19,7 +19,7 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 # Ollama configuration
-OLLAMA_BASE_URL = "http://127.0.0.1:11434"  # Endereço correto do Ollama
+OLLAMA_BASE_URL = "http://host.docker.internal:11434" # Endereço correto do Ollama
 MODEL_NAME = "mistral:latest"
 
 class QueryRequest(BaseModel):
