@@ -20,7 +20,7 @@ logger = logging.getLogger(__name__)
 
 # Service URLs
 MISTRAL_SERVICE_URL = "http://127.0.0.1:8003"  # Updated to avoid port conflict
-DOCUMENT_PROCESSOR_URL = "http://127.0.0.1:8001"
+DOCUMENT_PROCESSOR_URL = "http://10.117.0.19:8001"
 
 class RAGRequest(BaseModel):
     question: str
