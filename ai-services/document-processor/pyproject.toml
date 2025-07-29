@@ -20,6 +20,7 @@ dependencies = [
     "Pillow (>=9.0.0)",
     "sentence-transformers (>=2.2.0)",
     "docling (>=2.43.0,<3.0.0)",
+    "python-multipart (>=0.0.20,<0.0.21)",
 ]
 
 
