@@ -1,25 +1,26 @@
 """
-Mistral 7B Service with vLLM
+Mistral 7B Service with Ollama
 Optimized for knowledge base Q&A
 """
 
 import asyncio
 import logging
-from typing import List, Dict, Any
+import time
+import httpx
+from typing import List, Dict, Any, Optional
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 import uvicorn
-from vllm import AsyncLLMEngine, SamplingParams
-from vllm.engine.arg_utils import AsyncEngineArgs
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# Global engine instance
-engine = None
+# Ollama configuration
+OLLAMA_BASE_URL = "http://127.0.0.1:11434"  # Endereço correto do Ollama
+MODEL_NAME = "mistral:latest"
 
 class QueryRequest(BaseModel):
     question: str
@@ -34,37 +35,30 @@ class QueryResponse(BaseModel):
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """Initialize and cleanup the vLLM engine"""
-    global engine
-    
+    """Initialize and cleanup"""
     # Startup
-    logger.info("Initializing Mistral 7B model...")
+    logger.info("Starting Mistral 7B service with Ollama...")
     
-    # Configure engine arguments
-    engine_args = AsyncEngineArgs(
-        model="models/mistral-7b-instruct-v0.2",  # Update path as needed
-        # quantization="awq",  # Disabled for base model
-        gpu_memory_utilization=0.85,  # Reduced for unquantized model
-        max_model_len=4096,
-        enable_chunked_prefill=True,
-        max_num_seqs=20,  # Reduced for unquantized model
-        tensor_parallel_size=1,  # Single GPU
-        trust_remote_code=True
-    )
-    
+    # Test Ollama connection
     try:
-        engine = AsyncLLMEngine.from_engine_args(engine_args)
-        logger.info("Model loaded successfully!")
+        async with httpx.AsyncClient() as client:
+            response = await client.get(f"{OLLAMA_BASE_URL}/api/tags")
+            if response.status_code == 200:
+                models = response.json()
+                model_names = [model["name"] for model in models.get("models", [])]
+                if MODEL_NAME in model_names:
+                    logger.info(f"✅ {MODEL_NAME} is available in Ollama")
+                else:
+                    logger.warning(f"⚠️ {MODEL_NAME} not found. Available models: {model_names}")
+            else:
+                logger.error("❌ Failed to connect to Ollama")
     except Exception as e:
-        logger.error(f"Failed to load model: {e}")
-        raise
+        logger.error(f"❌ Ollama connection error: {e}")
     
     yield
     
     # Shutdown
-    if engine:
-        logger.info("Shutting down model engine...")
-        # Cleanup if needed
+    logger.info("Shutting down Mistral service...")
 
 app = FastAPI(
     title="Mistral 7B Knowledge Base API",
@@ -80,43 +74,49 @@ async def health_check():
 
 @app.post("/query", response_model=QueryResponse)
 async def query_model(request: QueryRequest):
-    """Generate answer based on question and context"""
-    if not engine:
-        raise HTTPException(status_code=503, detail="Model not loaded")
-    
-    import time
+    """Generate answer based on question and context using Ollama"""
     start_time = time.time()
     
     # Format prompt for Mistral
     prompt = format_mistral_prompt(request.question, request.context)
     
-    # Configure sampling parameters
-    sampling_params = SamplingParams(
-        temperature=request.temperature,
-        max_tokens=request.max_tokens,
-        stop=["</s>", "[/INST]"],
-        top_p=0.9
-    )
-    
     try:
-        # Generate response
-        results = await engine.generate(prompt, sampling_params, request_id=None)
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            payload = {
+                "model": MODEL_NAME,
+                "prompt": prompt,
+                "stream": False,
+                "options": {
+                    "temperature": request.temperature,
+                    "num_predict": request.max_tokens,
+                    "top_p": 0.9
+                }
+            }
+            
+            response = await client.post(f"{OLLAMA_BASE_URL}/api/generate", json=payload)
+            
+            if response.status_code != 200:
+                raise HTTPException(status_code=500, detail=f"Ollama error: {response.text}")
+            
+            result = response.json()
+            answer = result.get("response", "").strip()
+            
+            if not answer:
+                raise HTTPException(status_code=500, detail="No response generated")
+            
+            processing_time = time.time() - start_time
+            
+            # Estimate tokens (rough approximation)
+            tokens_used = len(answer.split()) * 1.3  # Rough token estimation
+            
+            return QueryResponse(
+                answer=answer,
+                tokens_used=int(tokens_used),
+                processing_time=processing_time
+            )
         
-        if not results:
-            raise HTTPException(status_code=500, detail="No response generated")
-        
-        result = results[0]
-        answer = result.outputs[0].text.strip()
-        
-        processing_time = time.time() - start_time
-        tokens_used = len(result.outputs[0].token_ids)
-        
-        return QueryResponse(
-            answer=answer,
-            tokens_used=tokens_used,
-            processing_time=processing_time
-        )
-        
+    except httpx.TimeoutException:
+        raise HTTPException(status_code=504, detail="Request timeout")
     except Exception as e:
         logger.error(f"Generation error: {e}")
         raise HTTPException(status_code=500, detail=f"Generation failed: {str(e)}")
@@ -140,16 +140,29 @@ Responda apenas com base nas informações do contexto fornecido. Se a informaç
 @app.get("/stats")
 async def get_stats():
     """Get model statistics"""
-    if not engine:
-        raise HTTPException(status_code=503, detail="Model not loaded")
-    
-    # Get engine stats (implement based on vLLM version)
-    return {
-        "model": "mistral-7b-instruct",
-        "status": "running",
-        "max_sequences": 20,
-        "gpu_memory_utilization": 0.85
-    }
+    try:
+        async with httpx.AsyncClient() as client:
+            response = await client.get(f"{OLLAMA_BASE_URL}/api/tags")
+            if response.status_code == 200:
+                models = response.json()
+                return {
+                    "model": MODEL_NAME,
+                    "status": "running",
+                    "available_models": [model["name"] for model in models.get("models", [])],
+                    "ollama_url": OLLAMA_BASE_URL
+                }
+            else:
+                return {
+                    "model": MODEL_NAME,
+                    "status": "error",
+                    "error": "Cannot connect to Ollama"
+                }
+    except Exception as e:
+        return {
+            "model": MODEL_NAME,
+            "status": "error",
+            "error": str(e)
+        }
 
 if __name__ == "__main__":
     uvicorn.run(

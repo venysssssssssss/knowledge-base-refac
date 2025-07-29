@@ -17,9 +17,9 @@ services:
   # Redis for async queues
   redis:
     image: redis:7-alpine
-    container_name: redis
+    container_name: redis-kb
     ports:
-      - "6380:6379"  # Changed to avoid conflict with existing Redis
+      - "6380:6379"  # Usar porta diferente para evitar conflito
     volumes:
       - ./data/redis:/data
     networks:
@@ -41,32 +41,55 @@ services:
     networks:
       - knowledge-base
 
-  # AI Services (Mistral 7B)
-  ai-services:
+  # Mistral 7B Service (using Ollama on host)
+  mistral-service:
     build: 
-      context: ./ai-services
+      context: ./ai-services/inference
       dockerfile: Dockerfile
-    container_name: ai-services
+    container_name: mistral-service
     ports:
       - "8000:8000"
     volumes:
-      - ./models:/app/models
-      - ./ai-services:/app
+      - ./ai-services/inference:/app
     environment:
-      - CUDA_VISIBLE_DEVICES=0
-      - HF_HOME=/app/models
+      - OLLAMA_BASE_URL=http://172.17.0.1:11434  # Docker host IP
     depends_on:
       - qdrant
       - redis
     networks:
       - knowledge-base
-    deploy:
-      resources:
-        reservations:
-          devices:
-            - driver: nvidia
-              count: 1
-              capabilities: [gpu]
+
+  # Document Processor Service
+  document-processor:
+    build: 
+      context: ./ai-services/document-processor
+      dockerfile: Dockerfile
+    container_name: document-processor
+    ports:
+      - "8001:8001"
+    volumes:
+      - ./ai-services/document-processor:/app
+      - ./data/uploads:/app/uploads
+    depends_on:
+      - qdrant
+    networks:
+      - knowledge-base
+
+  # RAG Service
+  rag-service:
+    build: 
+      context: ./ai-services/rag
+      dockerfile: Dockerfile
+    container_name: rag-service
+    ports:
+      - "8002:8002"
+    volumes:
+      - ./ai-services/rag:/app
+    depends_on:
+      - mistral-service
+      - document-processor
+    networks:
+      - knowledge-base
 
 networks:
   knowledge-base:
