@@ -118,7 +118,12 @@ class DocumentProcessor:
         
     async def initialize(self):
         """Initialize Qdrant client and embedding model"""
-        # Initialize Qdrant client
+        # Initialize embedding model first
+        logger.info(f"Initializing SentenceTransformer embeddings: {EMBEDDING_MODEL}")
+        self.embedding_model = EmbeddingService(EMBEDDING_MODEL)
+        await self.embedding_model.initialize()
+        
+        # Then initialize Qdrant client
         try:
             self.qdrant_client = QdrantClient(url=QDRANT_URL)
             await self.ensure_collection_exists()
@@ -126,11 +131,6 @@ class DocumentProcessor:
         except Exception as e:
             logger.error(f"Failed to initialize Qdrant client: {e}")
             raise
-            
-        # Initialize embedding model
-        logger.info(f"Initializing SentenceTransformer embeddings: {EMBEDDING_MODEL}")
-        self.embedding_model = EmbeddingService(EMBEDDING_MODEL)
-        await self.embedding_model.initialize()
     
     async def ensure_collection_exists(self):
         """Create Qdrant collection if it doesn't exist"""
@@ -141,9 +141,8 @@ class DocumentProcessor:
             if COLLECTION_NAME not in collection_names:
                 logger.info(f"Creating collection: {COLLECTION_NAME}")
                 
-                # Get embedding dimension from the model
-                test_embedding = await self.embedding_model.embed_texts(["test"])
-                embedding_dim = len(test_embedding[0]) if test_embedding else 384
+                # Use default embedding dimension since model might not be loaded yet
+                embedding_dim = 384  # Default for all-MiniLM-L6-v2
                 
                 self.qdrant_client.create_collection(
                     collection_name=COLLECTION_NAME,
@@ -252,16 +251,22 @@ class DocumentProcessor:
 # Global processor instance
 processor = DocumentProcessor()
 
+from contextlib import asynccontextmanager
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # Startup
+    await processor.initialize()
+    yield
+    # Shutdown - cleanup if needed
+
 # FastAPI app
 app = FastAPI(
     title="Document Processor API",
     description="PDF processing and embedding generation for knowledge base",
-    version="1.0.0"
+    version="1.0.0",
+    lifespan=lifespan
 )
-
-@app.on_event("startup")
-async def startup_event():
-    await processor.initialize()
 
 @app.get("/health")
 async def health_check():
