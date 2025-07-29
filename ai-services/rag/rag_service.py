@@ -233,7 +233,33 @@ async def health_check():
 async def ask_question(request: RAGRequest):
     """Ask a question with RAG (Retrieval-Augmented Generation)"""
     try:
-        return await rag_service.process_rag_query(request)
+        start_time = time.time()
+        # Busca chunks relevantes
+        search_results = await rag_service.search_documents(
+            query=request.question,
+            limit=request.search_limit,
+            score_threshold=request.score_threshold
+        )
+        search_time = time.time() - start_time
+        # Junta os textos dos chunks
+        answer = "\n---\n".join([r.get("content", "") for r in search_results])
+        sources = []
+        for result in search_results:
+            source = {
+                "content_preview": result.get("content", "")[:200] + "..." if len(result.get("content", "")) > 200 else result.get("content", ""),
+                "score": result.get("score", 0),
+                "metadata": result.get("metadata", {})
+            }
+            sources.append(source)
+        return RAGResponse(
+            question=request.question,
+            answer=answer,
+            sources=sources,
+            tokens_used=0,
+            processing_time=time.time() - start_time,
+            search_time=search_time,
+            generation_time=0.0
+        )
     except Exception as e:
         logger.error(f"RAG query failed: {e}")
         raise HTTPException(status_code=500, detail=f"Query processing failed: {str(e)}")
