@@ -30,7 +30,7 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 # Configuration
-QDRANT_URL = "http://localhost:6333"
+QDRANT_URL = "http://qdrant:6333"
 COLLECTION_NAME = "knowledge_base"
 EMBEDDING_MODEL = "all-MiniLM-L6-v2"  # Lightweight sentence transformer model
 CHUNK_SIZE = 1000
