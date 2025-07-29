@@ -11,9 +11,6 @@ services:
       - ./ai-services/inference:/app
     environment:
       - OLLAMA_BASE_URL=http://172.17.0.1:11434  # Docker host IP
-    depends_on:
-      - qdrant
-      - redis
     networks:
       - knowledge-base
 
@@ -27,8 +24,6 @@ services:
     volumes:
       - ./ai-services/document-processor:/app
       - ./data/uploads:/app/uploads
-    depends_on:
-      - qdrant
     networks:
       - knowledge-base
 
