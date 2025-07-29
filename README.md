@@ -72,6 +72,21 @@ qdrant.upsert(vectors=embeddings)
 - [ ] Baixar modelo Mistral AWQ: `huggingface-cli download TheBloke/Mistral-7B-AWQ`
 - [ ] Testar inferência: `python ai-services/inference/test_load.py`
 
-## 🚀 Primeiro Passo: Deploy do Modelo Mistral 7B
+## 🚀 Primeiro Passo: Setup do Projeto
+
+### Clone com Submodules
+```bash
+# Clone recursivo (recomendado)
+git clone --recursive https://github.com/venysssssssssss/knowledge-base-refac.git
+
+# OU inicializar submodules depois
+git submodule init && git submodule update
+```
+
+### Dependências
+```bash
+cd knowledge-base-refac
+./scripts/install_dependencies.sh
+```
 
 **Próxima Etapa:** Configurar fila Redis para processamento assíncrono!

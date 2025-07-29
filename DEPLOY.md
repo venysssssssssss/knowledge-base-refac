@@ -1,23 +1,28 @@
-# 🚀 Guia de Deploy - Mistral 7B Knowledge Base
+# 🚀 RAG Pipeline Setup Guide - Mistral 7B + Ollama
 
-## Pré-requisitos
+## Arquitetura do Sistema
 
-### Sistema
-- Ubuntu 20.04+ / CentOS 8+ / Similar
-- 16GB+ RAM
-- NVIDIA GPU (8GB+ VRAM recomendado)
-- 50GB+ espaço em disco
-
-### Software
-```bash
-# Docker & Docker Compose
-curl -fsSL https://get.docker.com -o get-docker.sh
-sudo sh get-docker.sh
-
-# NVIDIA Container Toolkit
-distribution=$(. /etc/os-release;echo $ID$VERSION_ID)
-curl -s -L https://nvidia.github.io/nvidia-docker/gpgkey | sudo apt-key add -
-curl -s -L https://nvidia.github.io/nvidia-docker/$distribution/nvidia-docker.list | sudo tee /etc/apt/sources.list.d/nvidia-docker.list
+```
+┌─────────────────┐    ┌──────────────────┐    ┌─────────────────┐
+│   PDF Upload    │────│  Document        │────│    Qdrant      │
+│     (User)      │    │  Processor       │    │  (Embeddings)   │
+└─────────────────┘    │  (Port 8001)     │    │  (Port 6333)    │
+                       └──────────────────┘    └─────────────────┘
+                                │
+                                │ Embeddings
+                                ▼
+┌─────────────────┐    ┌──────────────────┐    ┌─────────────────┐
+│   Questions     │────│   RAG Service    │────│  Mistral 7B     │
+│    (User)       │    │   (Port 8002)    │    │  via Ollama     │
+└─────────────────┘    └──────────────────┘    │  (Port 11434)   │
+                                │               └─────────────────┘
+                                │ Context
+                                ▼
+                       ┌──────────────────┐
+                       │   Final Answer   │
+                       │    to User       │
+                       └──────────────────┘
+```
 
 sudo apt-get update && sudo apt-get install -y nvidia-docker2
 sudo systemctl restart docker

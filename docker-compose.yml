@@ -1,72 +1,46 @@
 services:
-  # Vector Database
-  qdrant:
-    image: qdrant/qdrant:v1.7.0
-    container_name: qdrant
-    ports:
-      - "6333:6333"
-      - "6334:6334"
-    volumes:
-      - ./data/qdrant:/qdrant/storage
-    environment:
-      - QDRANT__SERVICE__HTTP_PORT=6333
-      - QDRANT__SERVICE__GRPC_PORT=6334
-    networks:
-      - knowledge-base
 
-  # Redis for async queues
-  redis:
-    image: redis:7-alpine
-    container_name: redis
-    ports:
-      - "6380:6379"  # Changed to avoid conflict with existing Redis
-    volumes:
-      - ./data/redis:/data
-    networks:
-      - knowledge-base
-
-  # MinIO for document storage
-  minio:
-    image: minio/minio:latest
-    container_name: minio
-    ports:
-      - "9000:9000"
-      - "9001:9001"
-    volumes:
-      - ./data/minio:/data
-    environment:
-      - MINIO_ROOT_USER=minioadmin
-      - MINIO_ROOT_PASSWORD=minioadmin123
-    command: server /data --console-address ":9001"
-    networks:
-      - knowledge-base
-
-  # AI Services (Mistral 7B)
-  ai-services:
+  mistral-service:
     build: 
-      context: ./ai-services
+      context: ./ai-services/inference
       dockerfile: Dockerfile
-    container_name: ai-services
+    container_name: mistral-service
     ports:
-      - "8000:8000"
-    volumes:
-      - ./models:/app/models
-      - ./ai-services:/app
+      - "8003:8003"
+    # volumes:
+    #   - ./ai-services/inference:/app
     environment:
-      - CUDA_VISIBLE_DEVICES=0
-      - HF_HOME=/app/models
-    depends_on:
-      - qdrant
-      - redis
+      - OLLAMA_BASE_URL=http://172.17.0.1:11434  # Docker host IP
     networks:
       - knowledge-base
-    deploy:
-      resources:
-        reservations:
-          devices:
-            - driver: nvidia
-              count: 1
-              capabilities: [gpu]
+
+  document-processor:
+    build: 
+      context: ./ai-services/document-processor
+      dockerfile: Dockerfile
+    container_name: document-processor
+    ports:
+      - "8001:8001"
+    # volumes:
+    #   - ./ai-services/document-processor:/app
+    #   - ./data/uploads:/app/uploads
+    networks:
+      - knowledge-base
+
+  rag-service:
+    build: 
+      context: ./ai-services/rag
+      dockerfile: Dockerfile
+    container_name: rag-service
+    ports:
+      - "8002:8002"
+    # volumes:
+    #   - ./ai-services/rag:/app
+    depends_on:
+      - mistral-service
+      - document-processor
+    networks:
+      - knowledge-base
 
 networks:
   knowledge-base:
