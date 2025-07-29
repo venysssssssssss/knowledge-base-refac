@@ -168,6 +168,6 @@ if __name__ == "__main__":
     uvicorn.run(
         "mistral_service:app",
         host="0.0.0.0",
-        port=8000,
+        port=8003,  # Changed from 8000 to avoid conflict
         log_level="info"
     )
