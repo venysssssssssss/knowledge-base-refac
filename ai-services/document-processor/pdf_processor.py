@@ -158,16 +158,34 @@ class DocumentProcessor:
             logger.error(f"Error creating collection: {e}")
             raise
     
+
+    def extract_text_with_docling(self, pdf_file: bytes) -> Optional[str]:
+        """Extract text from PDF using Docling"""
+        try:
+            import io
+            from docling import Document
+            pdf_stream = io.BytesIO(pdf_file)
+            doc = Document.from_pdf(pdf_stream)
+            # Extrai texto legível de todas as páginas
+            texts = [page.text for page in doc.pages]
+            return "\n".join(texts)
+        except Exception as e:
+            logger.warning(f"Docling parsing failed: {e}")
+            return None
+
     def extract_text_from_pdf(self, pdf_file: bytes) -> str:
-        """Extract text from PDF file"""
+        """Extract text from PDF file, prefer Docling if available"""
+        docling_text = self.extract_text_with_docling(pdf_file)
+        if docling_text and len(docling_text.strip()) > 50:
+            logger.info("✅ Docling parsing used for PDF")
+            return docling_text
+        # Fallback para PyPDF2
         try:
             import io
             pdf_reader = PyPDF2.PdfReader(io.BytesIO(pdf_file))
             text = ""
-            
             for page in pdf_reader.pages:
                 text += page.extract_text() + "\n"
-            
             return text.strip()
         except Exception as e:
             logger.error(f"Error extracting text from PDF: {e}")
