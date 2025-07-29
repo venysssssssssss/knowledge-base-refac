@@ -1,25 +1,29 @@
 """
-PDF Document Processor
-Extracts text from PDFs, chunks it, and generates embeddings
+PDF Document Processor with Dolphin (ByteDance) for parsing and Sentence Transformers for embeddings
 """
 
 import asyncio
 import logging
+import time
+import os
+import hashlib
+import httpx
+import uuid
 from typing import List, Dict, Any, Optional
 from pathlib import Path
-import hashlib
-import uuid
 
 import PyPDF2
-import httpx
-import torch
-from transformers import AutoTokenizer, AutoModel
 from qdrant_client import QdrantClient
-from qdrant_client.http import models
-from fastapi import FastAPI, UploadFile, File, HTTPException
+from qdrant_client import models
+from qdrant_client.models import Distance, VectorParams, PointStruct
+from sentence_transformers import SentenceTransformer
+from transformers import AutoTokenizer, AutoModel
+import torch
+from PIL import Image
+
+from fastapi import FastAPI, HTTPException, UploadFile, File
 from pydantic import BaseModel
 import uvicorn
-import numpy as np
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -28,65 +32,48 @@ logger = logging.getLogger(__name__)
 # Configuration
 QDRANT_URL = "http://localhost:6333"
 COLLECTION_NAME = "knowledge_base"
-OLLAMA_URL = "http://127.0.0.1:11434"  # Endereço correto do Ollama
-DOLPHIN_MODEL = "mistral:latest"  # Usar o modelo que você já tem
+EMBEDDING_MODEL = "all-MiniLM-L6-v2"  # Lightweight sentence transformer model
 CHUNK_SIZE = 1000
 CHUNK_OVERLAP = 200
 
-class DolphinEmbeddings:
-    """Custom embeddings using Dolphin model via Ollama"""
+class EmbeddingService:
+    """Service for generating embeddings using SentenceTransformers"""
     
-    def __init__(self, model_name: str = DOLPHIN_MODEL, ollama_url: str = OLLAMA_URL):
+    def __init__(self, model_name: str = EMBEDDING_MODEL):
         self.model_name = model_name
-        self.ollama_url = ollama_url
-        self.embedding_dim = 384  # Default dimension, will be determined dynamically
+        self.model = None
+        self.embedding_dim = 384  # all-MiniLM-L6-v2 dimension
         
+    async def initialize(self):
+        """Initialize the embedding model"""
+        try:
+            self.model = SentenceTransformer(self.model_name)
+            logger.info(f"✅ Embedding model {self.model_name} loaded successfully")
+        except Exception as e:
+            logger.error(f"Failed to load embedding model: {e}")
+            # Fallback to simple embedding method
+            self.model = None
+            
     async def embed_texts(self, texts: List[str]) -> List[List[float]]:
-        """Generate embeddings for a list of texts using Mistral via Ollama"""
-        embeddings = []
-        
-        async with httpx.AsyncClient(timeout=60.0) as client:
-            for text in texts:
-                try:
-                    # Use Ollama's generate API para criar embeddings
-                    payload = {
-                        "model": self.model_name,
-                        "prompt": f"[EMBED] {text[:500]}",  # Limitar tamanho do texto
-                        "stream": False
-                    }
-                    
-                    response = await client.post(
-                        f"{self.ollama_url}/api/generate",
-                        json=payload
-                    )
-                    
-                    if response.status_code == 200:
-                        result = response.json()
-                        # Como Ollama não tem API de embeddings direta, usar hash do response
-                        response_text = result.get("response", "")
-                        embedding = self._text_to_embedding(text + response_text)
-                        embeddings.append(embedding)
-                    else:
-                        # Fallback for failed requests
-                        embedding = self._fallback_embedding(text)
-                        embeddings.append(embedding)
-                        
-                except Exception as e:
-                    logger.warning(f"Error generating embedding for text: {e}")
-                    # Fallback embedding
-                    embedding = self._fallback_embedding(text)
-                    embeddings.append(embedding)
-        
-        return embeddings
+        """Generate embeddings for a list of texts"""
+        if self.model:
+            try:
+                embeddings = self.model.encode(texts, convert_to_tensor=False)
+                return embeddings.tolist()
+            except Exception as e:
+                logger.warning(f"SentenceTransformer encoding failed: {e}, using fallback")
+                
+        # Fallback method using hash-based embeddings
+        return [self._fallback_embedding(text) for text in texts]
     
-    def _text_to_embedding(self, text: str) -> List[float]:
-        """Convert text to embedding using multiple hash functions"""
+    def _fallback_embedding(self, text: str) -> List[float]:
+        """Fallback method to generate simple embeddings using text hashing"""
         import hashlib
         
-        # Usar múltiplas funções hash para criar embedding mais robusto
+        # Use multiple hash functions for more robust embedding
         hashes = [
             hashlib.md5(text.encode()).hexdigest(),
-            hashlib.sha1(text.encode()).hexdigest()[:32],  # Truncar para mesmo tamanho
+            hashlib.sha1(text.encode()).hexdigest()[:32],
             hashlib.sha256(text.encode()).hexdigest()[:32]
         ]
         
@@ -96,17 +83,13 @@ class DolphinEmbeddings:
                 hex_pair = hash_str[i:i+2]
                 embedding.append(int(hex_pair, 16) / 255.0)
         
-        # Garantir tamanho fixo
+        # Ensure fixed size
         if len(embedding) > self.embedding_dim:
             embedding = embedding[:self.embedding_dim]
         elif len(embedding) < self.embedding_dim:
             embedding.extend([0.0] * (self.embedding_dim - len(embedding)))
             
         return embedding
-    
-    def _fallback_embedding(self, text: str) -> List[float]:
-        """Fallback method to generate simple embeddings using text hashing"""
-        return self._text_to_embedding(text)
 
 class DocumentChunk(BaseModel):
     content: str
@@ -130,25 +113,24 @@ class SearchResult(BaseModel):
 
 class DocumentProcessor:
     def __init__(self):
-        self.embedding_model = None
         self.qdrant_client = None
+        self.embedding_model = None
         
     async def initialize(self):
-        """Initialize embedding model and Qdrant client"""
-        logger.info("Initializing document processor...")
-        
-        # Load Dolphin embedding model
-        logger.info(f"Initializing Dolphin embeddings via Ollama: {DOLPHIN_MODEL}")
-        self.embedding_model = DolphinEmbeddings(DOLPHIN_MODEL, OLLAMA_URL)
-        
+        """Initialize Qdrant client and embedding model"""
         # Initialize Qdrant client
-        logger.info(f"Connecting to Qdrant at {QDRANT_URL}")
-        self.qdrant_client = QdrantClient(url=QDRANT_URL)
-        
-        # Create collection if it doesn't exist
-        await self.ensure_collection_exists()
-        
-        logger.info("✅ Document processor initialized")
+        try:
+            self.qdrant_client = QdrantClient(url=QDRANT_URL)
+            await self.ensure_collection_exists()
+            logger.info("✅ Qdrant client initialized")
+        except Exception as e:
+            logger.error(f"Failed to initialize Qdrant client: {e}")
+            raise
+            
+        # Initialize embedding model
+        logger.info(f"Initializing SentenceTransformer embeddings: {EMBEDDING_MODEL}")
+        self.embedding_model = EmbeddingService(EMBEDDING_MODEL)
+        await self.embedding_model.initialize()
     
     async def ensure_collection_exists(self):
         """Create Qdrant collection if it doesn't exist"""
@@ -214,11 +196,9 @@ class DocumentProcessor:
         
         return chunks
     
-    async def generate_embeddings(self, chunks: List[DocumentChunk]) -> List[List[float]]:
-        """Generate embeddings for text chunks using Dolphin"""
-        texts = [chunk.content for chunk in chunks]
-        embeddings = await self.embedding_model.embed_texts(texts)
-        return embeddings
+    async def generate_embeddings(self, chunks: List[str]) -> List[List[float]]:
+        """Generate embeddings for text chunks using SentenceTransformers"""
+        return await self.embedding_model.embed_texts(chunks)
     
     async def store_in_qdrant(self, chunks: List[DocumentChunk], embeddings: List[List[float]], document_id: str):
         """Store chunks and embeddings in Qdrant"""
@@ -246,7 +226,7 @@ class DocumentProcessor:
     
     async def search_similar_chunks(self, query: str, limit: int = 5, score_threshold: float = 0.7) -> List[SearchResult]:
         """Search for similar chunks in Qdrant"""
-        # Generate embedding for query using Dolphin
+        # Generate embedding for query using SentenceTransformers
         query_embeddings = await self.embedding_model.embed_texts([query])
         query_embedding = query_embeddings[0]
         
