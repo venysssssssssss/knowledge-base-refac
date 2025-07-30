@@ -4,10 +4,40 @@ PDF Document Processor with Dolphin (ByteDance) for parsing and Sentence Transfo
 
 import asyncio
 import logging
-import time
 import os
 import hashlib
 import httpx
+import logging
+import httpx
+# Configure logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s [%(levelname)s] %(name)s: %(message)s'
+)
+
+# SOLID principles applied
+# SRP: Each class/function has a single responsibility
+# OCP: Classes open for extension, closed for modification
+# LSP: Subclasses can replace superclasses
+# ISP: Specific interfaces for each operation
+# DIP: Depend on abstractions
+
+class DocumentProcessorLogger:
+    def __init__(self, name: str):
+        self.logger = logging.getLogger(name)
+
+    def info(self, msg):
+        self.logger.info(msg)
+
+    def error(self, msg):
+        self.logger.error(msg)
+
+    def debug(self, msg):
+        self.logger.debug(msg)
+
+# Example usage of the logger
+doc_logger = DocumentProcessorLogger(__name__)
+doc_logger.info('Document processor started.')
 import uuid
 from typing import List, Dict, Any, Optional
 from pathlib import Path
@@ -24,6 +54,8 @@ from PIL import Image
 from fastapi import FastAPI, HTTPException, UploadFile, File
 from pydantic import BaseModel
 import uvicorn
+import logging
+from pdfminer.high_level import extract_text
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -35,6 +67,12 @@ COLLECTION_NAME = "knowledge_base"
 EMBEDDING_MODEL = "all-MiniLM-L6-v2"  # Lightweight sentence transformer model
 CHUNK_SIZE = 1000
 CHUNK_OVERLAP = 200
+
+class DocumentChunk(BaseModel):
+    chunk_id: str
+    text: str
+    embedding: List[float]
+    metadata: Dict[str, Any] = {}
 
 class EmbeddingService:
     """Service for generating embeddings using SentenceTransformers"""
@@ -91,10 +129,6 @@ class EmbeddingService:
             
         return embedding
 
-class DocumentChunk(BaseModel):
-    content: str
-    metadata: Dict[str, Any]
-
 class ProcessingResponse(BaseModel):
     document_id: str
     filename: str
@@ -113,8 +147,8 @@ class SearchResult(BaseModel):
 
 class DocumentProcessor:
     def __init__(self):
-        self.qdrant_client = None
-        self.embedding_model = None
+        self.embedding_service = EmbeddingService()
+        self.qdrant = QdrantClient(url=QDRANT_URL)
         
     async def initialize(self):
         """Initialize Qdrant client and embedding model"""
@@ -166,15 +200,15 @@ class DocumentProcessor:
             from docling import Document
             pdf_stream = io.BytesIO(pdf_file)
             doc = Document.from_pdf(pdf_stream)
-            # Extrai texto legível de todas as páginas
             texts = [page.text for page in doc.pages]
+            logger.info(f"Docling extraiu {len(texts)} páginas.")
             return "\n".join(texts)
         except Exception as e:
             logger.warning(f"Docling parsing failed: {e}")
             return None
 
     def extract_text_from_pdf(self, pdf_file: bytes) -> str:
-        """Extract text from PDF file, prefer Docling if available"""
+        """Extract text from PDF file, prefer Docling, fallback PyPDF2/pdfminer"""
         docling_text = self.extract_text_with_docling(pdf_file)
         if docling_text and len(docling_text.strip()) > 50:
             logger.info("✅ Docling parsing used for PDF")
@@ -185,76 +219,119 @@ class DocumentProcessor:
             pdf_reader = PyPDF2.PdfReader(io.BytesIO(pdf_file))
             text = ""
             for page in pdf_reader.pages:
-                text += page.extract_text() + "\n"
+                page_text = page.extract_text()
+                if page_text:
+                    text += page_text + "\n"
+            if len(text.strip()) > 50:
+                logger.info("✅ PyPDF2 parsing used for PDF")
+                return text.strip()
+        except Exception as e:
+            logger.warning(f"PyPDF2 parsing failed: {e}")
+        # Fallback para pdfminer
+        try:
+            from pdfminer.high_level import extract_text
+            import io
+            text = extract_text(io.BytesIO(pdf_file))
+            logger.info("✅ pdfminer parsing used for PDF")
             return text.strip()
         except Exception as e:
             logger.error(f"Error extracting text from PDF: {e}")
             raise HTTPException(status_code=400, detail=f"Failed to extract text from PDF: {str(e)}")
     
     def chunk_text(self, text: str, filename: str) -> List[DocumentChunk]:
-        """Split text into chunks with overlap"""
+        """Chunk text respeitando limites de tokens/frases, evitando cortes abruptos"""
+        from transformers import AutoTokenizer
+        tokenizer = AutoTokenizer.from_pretrained(EMBEDDING_MODEL)
+        sentences = text.split('. ')
         chunks = []
-        text_length = len(text)
-        
-        for i in range(0, text_length, CHUNK_SIZE - CHUNK_OVERLAP):
-            chunk_text = text[i:i + CHUNK_SIZE]
-            
-            if len(chunk_text.strip()) > 50:  # Ignore very small chunks
-                chunk = DocumentChunk(
-                    content=chunk_text.strip(),
-                    metadata={
-                        "filename": filename,
-                        "chunk_index": len(chunks),
-                        "chunk_size": len(chunk_text),
-                        "source": "pdf"
-                    }
-                )
-                chunks.append(chunk)
-        
+        current_chunk = ''
+        current_tokens = 0
+        chunk_index = 0
+        for sentence in sentences:
+            sentence = sentence.strip()
+            if not sentence:
+                continue
+            tokens = len(tokenizer.encode(sentence, add_special_tokens=False))
+            if current_tokens + tokens > CHUNK_SIZE:
+                if len(current_chunk.strip()) > 50:
+                    chunk = DocumentChunk(
+                        chunk_id=str(uuid.uuid4()),
+                        text=current_chunk.strip(),
+                        embedding=[],
+                        metadata={
+                            "filename": filename,
+                            "chunk_index": chunk_index,
+                            "chunk_size": current_tokens,
+                            "source": "pdf"
+                        }
+                    )
+                    chunks.append(chunk)
+                    chunk_index += 1
+                # Inicia novo chunk
+                current_chunk = sentence
+                current_tokens = tokens
+            else:
+                if current_chunk:
+                    current_chunk += '. ' + sentence
+                else:
+                    current_chunk = sentence
+                current_tokens += tokens
+        # Adiciona último chunk
+        if len(current_chunk.strip()) > 50:
+            chunk = DocumentChunk(
+                chunk_id=str(uuid.uuid4()),
+                text=current_chunk.strip(),
+                embedding=[],
+                metadata={
+                    "filename": filename,
+                    "chunk_index": chunk_index,
+                    "chunk_size": current_tokens,
+                    "source": "pdf"
+                }
+            )
+            chunks.append(chunk)
+        logger.info(f"Chunking gerou {len(chunks)} chunks para {filename}")
         return chunks
     
     async def generate_embeddings(self, chunks: List[str]) -> List[List[float]]:
         """Generate embeddings for text chunks using SentenceTransformers"""
-        return await self.embedding_model.embed_texts(chunks)
+        logger.info(f"Gerando embeddings para {len(chunks)} chunks...")
+        embeddings = await self.embedding_model.embed_texts(chunks)
+        logger.info(f"Embeddings gerados com sucesso.")
+        return embeddings
     
     async def store_in_qdrant(self, chunks: List[DocumentChunk], embeddings: List[List[float]], document_id: str):
         """Store chunks and embeddings in Qdrant"""
         points = []
-        
         for i, (chunk, embedding) in enumerate(zip(chunks, embeddings)):
             point = models.PointStruct(
-                id=str(uuid.uuid4()),
+                id=chunk.chunk_id,
                 vector=embedding,
                 payload={
-                    "content": chunk.content,
+                    "content": chunk.text,
                     "document_id": document_id,
                     **chunk.metadata
                 }
             )
             points.append(point)
-        
-        # Batch insert
         self.qdrant_client.upsert(
             collection_name=COLLECTION_NAME,
             points=points
         )
-        
-        logger.info(f"✅ Stored {len(points)} chunks in Qdrant for document {document_id}")
+        logger.info(f"✅ Stored {len(points)} chunks in Qdrant for document {document_id}. IDs: {[c.chunk_id for c in chunks]}")
     
     async def search_similar_chunks(self, query: str, limit: int = 5, score_threshold: float = 0.7) -> List[SearchResult]:
-        """Search for similar chunks in Qdrant"""
-        # Generate embedding for query using SentenceTransformers
+        """Search for similar chunks in Qdrant, retorna chunks ordenados por relevância"""
+        logger.info(f"Gerando embedding da pergunta...")
         query_embeddings = await self.embedding_model.embed_texts([query])
         query_embedding = query_embeddings[0]
-        
-        # Search in Qdrant
+        logger.info(f"Buscando chunks mais relevantes no Qdrant...")
         search_results = self.qdrant_client.search(
             collection_name=COLLECTION_NAME,
             query_vector=query_embedding,
             limit=limit,
             score_threshold=score_threshold
         )
-        
         results = []
         for result in search_results:
             search_result = SearchResult(
@@ -263,8 +340,8 @@ class DocumentProcessor:
                 metadata={k: v for k, v in result.payload.items() if k != "content"}
             )
             results.append(search_result)
-        
-        return results
+        logger.info(f"Busca retornou {len(results)} chunks relevantes.")
+        return sorted(results, key=lambda r: r.score, reverse=True)
 
 # Global processor instance
 processor = DocumentProcessor()
