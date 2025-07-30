@@ -2,7 +2,15 @@
 
 import { useEffect, useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
-import { ChatLogger, useChatLogger } from '@/app/chat/registroschatELK'; // Ajuste o caminho conforme necessário
+import { ChatLogger, useChatLogger } from '@/app/chat/registroschatELK';
+import {
+    saveMessageToCache,
+    loadCachedMessages,
+    removeFromCache,
+    checkConnectionStatus,
+    setupConnectionListener,
+    processFileForOffline
+} from './chatCache';
 
 type Message = {
     id: string;
@@ -45,6 +53,7 @@ export default function ChatPage() {
     const [isTyping, setIsTyping] = useState(false);
     const [isUploading, setIsUploading] = useState(false);
     const [uploadProgress, setUploadProgress] = useState(0);
+    const [isOnline, setIsOnline] = useState(true);
     const messagesEndRef = useRef<HTMLDivElement>(null);
     const inputRef = useRef<HTMLInputElement>(null);
     const fileInputRef = useRef<HTMLInputElement>(null);
@@ -55,16 +64,55 @@ export default function ChatPage() {
 
     useEffect(() => {
         setIsClient(true);
-        setMessages([
-            {
-                id: '1',
-                text: 'Olá! Como posso te ajudar hoje? Você pode me enviar documentos ou perguntas diretamente.',
-                sender: 'bot',
-                timestamp: new Date(),
-            },
-        ]);
 
+        // Verificar status de conexão inicial
+        setIsOnline(checkConnectionStatus());
+
+        // Carregar mensagens do cache
+        const loadCachedData = async () => {
+            try {
+                const cachedMessages = await loadCachedMessages();
+                if (cachedMessages.length > 0) {
+                    setMessages(cachedMessages);
+                    addInfo('Mensagens carregadas do cache offline', { count: cachedMessages.length });
+                } else {
+                    setMessages([{
+                        id: '1',
+                        text: 'Olá! Como posso te ajudar hoje? Você pode me enviar documentos ou perguntas diretamente.',
+                        sender: 'bot',
+                        timestamp: new Date(),
+                    }]);
+                }
+            } catch (error) {
+                addError('Erro ao carregar mensagens do cache', {
+                    error: error instanceof Error ? error.message : 'Erro desconhecido'
+                });
+                setMessages([{
+                    id: '1',
+                    text: 'Olá! Como posso te ajudar hoje? Você pode me enviar documentos ou perguntas diretamente.',
+                    sender: 'bot',
+                    timestamp: new Date(),
+                }]);
+            }
+        };
+
+        loadCachedData();
         addInfo('Sessão de chat iniciada');
+
+        // Configurar listener de conexão
+        const cleanupListener = setupConnectionListener((online) => {
+            setIsOnline(online);
+            addInfo(online ? 'Conexão restaurada' : 'Modo offline ativado');
+
+            if (online) {
+                // Tentar sincronizar mensagens pendentes quando a conexão voltar
+                // (Implementar lógica de sincronização conforme necessário)
+            }
+        });
+
+        return () => {
+            cleanupListener();
+        };
     }, []);
 
     useEffect(() => {
@@ -106,12 +154,31 @@ export default function ChatPage() {
                 : userMessage.text
         });
 
+        // Salvar no cache imediatamente
+        await saveMessageToCache(userMessage);
         setMessages((prev) => [...prev, userMessage]);
         setInputValue('');
         setIsTyping(true);
 
         try {
-            // Simulando processamento do bot
+            if (!isOnline) {
+                // Modo offline - simular resposta do bot
+                await new Promise(resolve => setTimeout(resolve, 1000));
+
+                const botMessage: Message = {
+                    id: (Date.now() + 1).toString(),
+                    text: 'Estou offline no momento. Sua mensagem foi salva e será processada quando a conexão for restaurada.',
+                    sender: 'bot',
+                    timestamp: new Date(),
+                };
+
+                await saveMessageToCache(botMessage);
+                setMessages((prev) => [...prev, botMessage]);
+                addWarning('Modo offline - mensagem salva localmente');
+                return;
+            }
+
+            // Simulando processamento do bot (online)
             await new Promise(resolve => setTimeout(resolve, 1000 + Math.random() * 2000));
 
             const botMessage: Message = {
@@ -127,6 +194,7 @@ export default function ChatPage() {
                 responseTimeMs: botMessage.timestamp.getTime() - userMessage.timestamp.getTime()
             });
 
+            await saveMessageToCache(botMessage);
             setMessages((prev) => [...prev, botMessage]);
         } catch (error) {
             addError('Falha ao processar mensagem', {
@@ -173,12 +241,15 @@ export default function ChatPage() {
                 allowedTypes: ALLOWED_FILE_TYPES
             });
 
-            setMessages(prev => [...prev, {
+            const errorMessage: Message = {
                 id: Date.now().toString(),
                 text: `Erro: Tipo de arquivo não suportado (${fileExtension || file.type}). Formatos aceitos: PDF, DOC, DOCX, XLS, XLSX, PPT, PPTX, JPG, PNG, GIF, TXT`,
                 sender: 'bot',
                 timestamp: new Date(),
-            }]);
+            };
+
+            await saveMessageToCache(errorMessage);
+            setMessages(prev => [...prev, errorMessage]);
             return;
         }
 
@@ -190,25 +261,31 @@ export default function ChatPage() {
                 maxAllowed: '10MB'
             });
 
-            setMessages(prev => [...prev, {
+            const errorMessage: Message = {
                 id: Date.now().toString(),
                 text: `Erro: O arquivo é muito grande (${formatFileSize(file.size)}). Tamanho máximo permitido: 10MB`,
                 sender: 'bot',
                 timestamp: new Date(),
-            }]);
+            };
+
+            await saveMessageToCache(errorMessage);
+            setMessages(prev => [...prev, errorMessage]);
             return;
         }
 
         setIsUploading(true);
         setUploadProgress(0);
 
+        // Processar arquivo para armazenamento offline
+        const processedFile = await processFileForOffline(file);
+
         const attachment: Attachment = {
-            id: Date.now().toString(),
-            name: file.name,
-            type: getFileType(file),
-            size: file.size,
+            id: processedFile.id,
+            name: processedFile.name,
+            type: processedFile.type,
+            size: processedFile.size,
             progress: 0,
-            extension: fileExtension
+            extension: processedFile.extension
         };
 
         const userMessage: Message = {
@@ -220,6 +297,8 @@ export default function ChatPage() {
             isProcessing: true
         };
 
+        // Salvar no cache imediatamente
+        await saveMessageToCache(userMessage);
         setMessages((prev) => [...prev, userMessage]);
 
         const uploadInterval = setInterval(() => {
@@ -234,6 +313,32 @@ export default function ChatPage() {
         }, 200);
 
         try {
+            if (!isOnline) {
+                // Modo offline - apenas armazenar localmente
+                await new Promise(resolve => setTimeout(resolve, 1500));
+
+                const botMessage: Message = {
+                    id: (Date.now() + 1).toString(),
+                    text: 'Arquivo recebido em modo offline. Será processado quando a conexão for restaurada.',
+                    sender: 'bot',
+                    timestamp: new Date(),
+                };
+
+                await saveMessageToCache(botMessage);
+                setMessages(prev => prev.map(msg =>
+                    msg.id === userMessage.id
+                        ? {
+                            ...msg,
+                            isProcessing: false,
+                            text: 'Arquivo salvo localmente (modo offline)'
+                        }
+                        : msg
+                ));
+                setMessages(prev => [...prev, botMessage]);
+                addWarning('Modo offline - arquivo salvo localmente');
+                return;
+            }
+
             const formData = new FormData();
             formData.append('file', file);
 
@@ -267,14 +372,15 @@ export default function ChatPage() {
                     serverResponse: data
                 });
 
+                const updatedMessage: Message = {
+                    ...userMessage,
+                    isProcessing: false,
+                    text: data.message || 'Arquivo processado com sucesso'
+                };
+
+                await saveMessageToCache(updatedMessage);
                 setMessages(prev => prev.map(msg =>
-                    msg.id === userMessage.id
-                        ? {
-                            ...msg,
-                            isProcessing: false,
-                            text: data.message || 'Arquivo processado com sucesso'
-                        }
-                        : msg
+                    msg.id === userMessage.id ? updatedMessage : msg
                 ));
             } else {
                 throw new Error(data.message || 'Erro no processamento do arquivo');
@@ -287,12 +393,15 @@ export default function ChatPage() {
                 fileSize: file.size
             });
 
-            setMessages(prev => [...prev, {
+            const errorMessage: Message = {
                 id: Date.now().toString(),
                 text: `Erro ao processar arquivo: ${error instanceof Error ? error.message : 'Erro desconhecido'}`,
                 sender: 'bot',
                 timestamp: new Date(),
-            }]);
+            };
+
+            await saveMessageToCache(errorMessage);
+            setMessages(prev => [...prev, errorMessage]);
         } finally {
             setIsUploading(false);
             setUploadProgress(0);
@@ -430,8 +539,8 @@ export default function ChatPage() {
                                 Assistente de Conhecimento
                             </h1>
                             <p className="text-xs text-gray-400 flex items-center">
-                                <span className={`w-2 h-2 rounded-full mr-1 ${isTyping ? 'bg-yellow-400 animate-pulse' : 'bg-emerald-400'}`}></span>
-                                {isTyping ? 'Digitando...' : 'Online'}
+                                <span className={`w-2 h-2 rounded-full mr-1 ${isTyping ? 'bg-yellow-400 animate-pulse' : isOnline ? 'bg-emerald-400' : 'bg-gray-400'}`}></span>
+                                {isTyping ? 'Digitando...' : isOnline ? 'Online' : 'Offline'}
                             </p>
                         </div>
                     </div>
@@ -454,6 +563,12 @@ export default function ChatPage() {
                 </header>
 
                 <div className="relative z-10 flex-1 overflow-hidden bg-gray-800/40 backdrop-blur-lg flex flex-col shadow-lg border-l border-r border-gray-700/50">
+                    {!isOnline && (
+                        <div className="bg-yellow-500/20 text-yellow-300 text-sm p-2 text-center border-b border-yellow-500/30">
+                            Você está offline. As mensagens serão salvas localmente e enviadas quando a conexão for restaurada.
+                        </div>
+                    )}
+
                     <div className="flex-1 overflow-y-auto p-4 space-y-4">
                         {messages.map((message) => (
                             <div
@@ -570,7 +685,9 @@ export default function ChatPage() {
                                 value={inputValue}
                                 onChange={(e) => setInputValue(e.target.value)}
                                 onKeyDown={handleKeyDown}
-                                placeholder="Digite sua mensagem ou envie um arquivo..."
+                                placeholder={isOnline
+                                    ? "Digite sua mensagem ou envie um arquivo..."
+                                    : "Modo offline - mensagens serão salvas localmente"}
                                 className="flex-1 bg-gray-700/50 border border-gray-600 rounded-xl py-3 px-4 pr-12 text-white focus:outline-none focus:ring-2 focus:ring-emerald-500 focus:border-transparent backdrop-blur-sm transition-all duration-200 placeholder-gray-400"
                                 disabled={isUploading}
                             />
@@ -618,6 +735,8 @@ export default function ChatPage() {
                                     </svg>
                                     Enviando arquivo... {Math.round(uploadProgress)}%
                                 </span>
+                            ) : !isOnline ? (
+                                <span className="text-yellow-400">Modo offline ativado</span>
                             ) : (
                                 'O assistente pode cometer erros. Verifique informações importantes.'
                             )}
