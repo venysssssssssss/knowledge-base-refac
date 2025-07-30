@@ -14,12 +14,38 @@ from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 import uvicorn
 
-# Configure logging
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
+# Configuração básica de logging estruturado
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s [%(levelname)s] %(name)s: %(message)s'
+)
+
+# Princípios SOLID aplicados
+# SRP: Cada classe/função tem responsabilidade única
+# OCP: Classes abertas para extensão, fechadas para modificação
+# LSP: Subclasses podem substituir superclasses
+# ISP: Interfaces específicas para cada operação
+# DIP: Dependa de abstrações
+
+class RagLogger:
+    def __init__(self, name: str):
+        self.logger = logging.getLogger(name)
+
+    def info(self, msg):
+        self.logger.info(msg)
+
+    def error(self, msg):
+        self.logger.error(msg)
+
+    def debug(self, msg):
+        self.logger.debug(msg)
+
+# Exemplo de uso do logger
+rag_logger = RagLogger(__name__)
+rag_logger.info('RAG Service iniciado.')
 
 # Service URLs
-MISTRAL_SERVICE_URL = "http://127.0.0.1:8003"  # Updated to avoid port conflict
+MISTRAL_SERVICE_URL = "http://10.117.0.19:8003"  # Updated to avoid port conflict
 DOCUMENT_PROCESSOR_URL = "http://10.117.0.19:8001"
 
 class RAGRequest(BaseModel):
@@ -45,7 +71,7 @@ class RAGService:
     async def initialize(self):
         """Initialize HTTP client"""
         self.http_client = httpx.AsyncClient(timeout=60.0)
-        logger.info("✅ RAG service initialized")
+        rag_logger.info("✅ RAG service initialized")
     
     async def cleanup(self):
         """Cleanup resources"""
@@ -67,13 +93,13 @@ class RAGService:
             )
             
             if response.status_code != 200:
-                logger.error(f"Document search failed: {response.text}")
+                rag_logger.error(f"Document search failed: {response.text}")
                 return []
             
             return response.json()
             
         except Exception as e:
-            logger.error(f"Error searching documents: {e}")
+            rag_logger.error(f"Error searching documents: {e}")
             return []
     
     async def generate_answer(self, question: str, context: str, max_tokens: int = 512, temperature: float = 0.7) -> Dict[str, Any]:
@@ -97,7 +123,7 @@ class RAGService:
             return response.json()
             
         except Exception as e:
-            logger.error(f"Error generating answer: {e}")
+            rag_logger.error(f"Error generating answer: {e}")
             raise HTTPException(status_code=500, detail=f"Answer generation failed: {str(e)}")
     
     def build_context(self, search_results: List[Dict[str, Any]]) -> str:
@@ -128,7 +154,7 @@ class RAGService:
         )
         search_time = time.time() - search_start
         
-        logger.info(f"Found {len(search_results)} relevant documents in {search_time:.2f}s")
+        rag_logger.info(f"Found {len(search_results)} relevant documents in {search_time:.2f}s")
         
         # Step 2: Build context
         context = self.build_context(search_results)
@@ -144,7 +170,7 @@ class RAGService:
             )
         else:
             # Fallback: answer without context
-            logger.warning("No relevant documents found, answering without context")
+            rag_logger.warning("No relevant documents found, answering without context")
             mistral_response = await self.generate_answer(
                 question=request.question,
                 context="",
@@ -190,19 +216,19 @@ async def lifespan(app: FastAPI):
             # Test Mistral service
             mistral_response = await client.get(f"{MISTRAL_SERVICE_URL}/health")
             if mistral_response.status_code == 200:
-                logger.info("✅ Mistral service is accessible")
+                rag_logger.info("✅ Mistral service is accessible")
             else:
-                logger.warning("⚠️ Mistral service not accessible")
+                rag_logger.warning("⚠️ Mistral service not accessible")
             
             # Test Document processor
             doc_response = await client.get(f"{DOCUMENT_PROCESSOR_URL}/health")
             if doc_response.status_code == 200:
-                logger.info("✅ Document processor is accessible")
+                rag_logger.info("✅ Document processor is accessible")
             else:
-                logger.warning("⚠️ Document processor not accessible")
+                rag_logger.warning("⚠️ Document processor not accessible")
                 
     except Exception as e:
-        logger.error(f"Service connection test failed: {e}")
+        rag_logger.error(f"Service connection test failed: {e}")
     
     yield
     
@@ -233,35 +259,12 @@ async def health_check():
 async def ask_question(request: RAGRequest):
     """Ask a question with RAG (Retrieval-Augmented Generation)"""
     try:
-        start_time = time.time()
-        # Busca chunks relevantes
-        search_results = await rag_service.search_documents(
-            query=request.question,
-            limit=request.search_limit,
-            score_threshold=request.score_threshold
-        )
-        search_time = time.time() - start_time
-        # Junta os textos dos chunks
-        answer = "\n---\n".join([r.get("content", "") for r in search_results])
-        sources = []
-        for result in search_results:
-            source = {
-                "content_preview": result.get("content", "")[:200] + "..." if len(result.get("content", "")) > 200 else result.get("content", ""),
-                "score": result.get("score", 0),
-                "metadata": result.get("metadata", {})
-            }
-            sources.append(source)
-        return RAGResponse(
-            question=request.question,
-            answer=answer,
-            sources=sources,
-            tokens_used=0,
-            processing_time=time.time() - start_time,
-            search_time=search_time,
-            generation_time=0.0
-        )
+        rag_logger.info(f"Recebida pergunta: {request.question}")
+        response = await rag_service.process_rag_query(request)
+        rag_logger.info(f"Resposta gerada para pergunta: {request.question}")
+        return response
     except Exception as e:
-        logger.error(f"RAG query failed: {e}")
+        rag_logger.error(f"RAG query failed: {e}")
         raise HTTPException(status_code=500, detail=f"Query processing failed: {str(e)}")
 
 @app.get("/services/status")
@@ -293,7 +296,7 @@ async def get_services_status():
                 status["document_processor"]["error"] = str(e)
     
     except Exception as e:
-        logger.error(f"Error checking services: {e}")
+        rag_logger.error(f"Error checking services: {e}")
     
     return status
 

@@ -14,9 +14,35 @@ from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 import uvicorn
 
-# Configure logging
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
+# Configuração básica de logging estruturado
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s [%(levelname)s] %(name)s: %(message)s'
+)
+
+# Princípios SOLID aplicados
+# SRP: Cada classe/função tem responsabilidade única
+# OCP: Classes abertas para extensão, fechadas para modificação
+# LSP: Subclasses podem substituir superclasses
+# ISP: Interfaces específicas para cada operação
+# DIP: Dependa de abstrações
+
+class InferenceLogger:
+    def __init__(self, name: str):
+        self.logger = logging.getLogger(name)
+
+    def info(self, msg):
+        self.logger.info(msg)
+
+    def error(self, msg):
+        self.logger.error(msg)
+
+    def debug(self, msg):
+        self.logger.debug(msg)
+
+# Exemplo de uso do logger
+inference_logger = InferenceLogger(__name__)
+inference_logger.info('Serviço de inferência iniciado.')
 
 # Ollama configuration
 OLLAMA_BASE_URL = "http://10.117.0.19:11434"  # Endereço correto do Ollama
@@ -37,7 +63,7 @@ class QueryResponse(BaseModel):
 async def lifespan(app: FastAPI):
     """Initialize and cleanup"""
     # Startup
-    logger.info("Starting Mistral 7B service with Ollama...")
+    inference_logger.info("Starting Mistral 7B service with Ollama...")
     
     # Test Ollama connection
     try:
@@ -47,18 +73,18 @@ async def lifespan(app: FastAPI):
                 models = response.json()
                 model_names = [model["name"] for model in models.get("models", [])]
                 if MODEL_NAME in model_names:
-                    logger.info(f"✅ {MODEL_NAME} is available in Ollama")
+                    inference_logger.info(f"✅ {MODEL_NAME} is available in Ollama")
                 else:
-                    logger.warning(f"⚠️ {MODEL_NAME} not found. Available models: {model_names}")
+                    inference_logger.info(f"⚠️ {MODEL_NAME} not found. Available models: {model_names}")
             else:
-                logger.error("❌ Failed to connect to Ollama")
+                inference_logger.error("❌ Failed to connect to Ollama")
     except Exception as e:
-        logger.error(f"❌ Ollama connection error: {e}")
+        inference_logger.error(f"❌ Ollama connection error: {e}")
     
     yield
     
     # Shutdown
-    logger.info("Shutting down Mistral service...")
+    inference_logger.info("Shutting down Mistral service...")
 
 app = FastAPI(
     title="Mistral 7B Knowledge Base API",
@@ -118,7 +144,7 @@ async def query_model(request: QueryRequest):
     except httpx.TimeoutException:
         raise HTTPException(status_code=504, detail="Request timeout")
     except Exception as e:
-        logger.error(f"Generation error: {e}")
+        inference_logger.error(f"Generation error: {e}")
         raise HTTPException(status_code=500, detail=f"Generation failed: {str(e)}")
 
 def format_mistral_prompt(question: str, context: str = "") -> str:
@@ -168,6 +194,6 @@ if __name__ == "__main__":
     uvicorn.run(
         "mistral_service:app",
         host="0.0.0.0",
-        port=8003,  # Changed from 8000 to avoid conflict
+        port=8003,  # Changed from 8003 to avoid conflict
         log_level="info"
     )
