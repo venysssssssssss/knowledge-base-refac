@@ -63,7 +63,7 @@ logger = logging.getLogger(__name__)
 
 # Configuration
 QDRANT_URL = "http://qdrant:6333"
-COLLECTION_NAME = "knowledge_base"
+COLLECTION_NAME = "knowledge_base_v2"
 EMBEDDING_MODEL = "sentence-transformers/all-mpnet-base-v2"  # Modelo robusto para contexto longo e semântica
 CHUNK_SIZE = 1000
 CHUNK_OVERLAP = 200
@@ -167,16 +167,14 @@ class DocumentProcessor:
             raise
     
     async def ensure_collection_exists(self):
-        """Create Qdrant collection if it doesn't exist"""
+        """Create Qdrant collection if it doesn't exist, using the correct embedding dimension from the model."""
         try:
             collections = self.qdrant_client.get_collections()
             collection_names = [col.name for col in collections.collections]
-            
             if COLLECTION_NAME not in collection_names:
                 logger.info(f"Creating collection: {COLLECTION_NAME}")
-                
-                # Usa a dimensão correta do modelo atual
-                embedding_dim = 768  # all-mpnet-base-v2
+                # Descobre a dimensão do modelo carregado
+                embedding_dim = self.embedding_model.embedding_dim if hasattr(self.embedding_model, 'embedding_dim') else 768
                 self.qdrant_client.create_collection(
                     collection_name=COLLECTION_NAME,
                     vectors_config=models.VectorParams(
@@ -186,7 +184,14 @@ class DocumentProcessor:
                 )
                 logger.info(f"✅ Collection {COLLECTION_NAME} created with dim {embedding_dim}")
             else:
-                logger.info(f"✅ Collection {COLLECTION_NAME} already exists")
+                # Verifica se a dimensão está correta
+                info = self.qdrant_client.get_collection(COLLECTION_NAME)
+                current_dim = info.config.params.vectors.size
+                expected_dim = self.embedding_model.embedding_dim if hasattr(self.embedding_model, 'embedding_dim') else 768
+                if current_dim != expected_dim:
+                    logger.error(f"❌ Dimensão da coleção Qdrant ({current_dim}) não corresponde ao modelo ({expected_dim}). Exclua a coleção manualmente ou altere o nome da coleção.")
+                    raise Exception(f"Dimensão da coleção Qdrant ({current_dim}) não corresponde ao modelo ({expected_dim}). Exclua a coleção manualmente ou altere o nome da coleção.")
+                logger.info(f"✅ Collection {COLLECTION_NAME} already exists with correct dim {current_dim}")
         except Exception as e:
             logger.error(f"Error creating collection: {e}")
             raise
