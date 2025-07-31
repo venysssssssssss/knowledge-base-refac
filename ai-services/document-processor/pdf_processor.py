@@ -64,7 +64,7 @@ logger = logging.getLogger(__name__)
 # Configuration
 QDRANT_URL = "http://qdrant:6333"
 COLLECTION_NAME = "knowledge_base"
-EMBEDDING_MODEL = "sentence-transformers/all-MiniLM-L6-v2"  # Lightweight sentence transformer model
+EMBEDDING_MODEL = "sentence-transformers/all-mpnet-base-v2"  # Modelo robusto para contexto longo e semântica
 CHUNK_SIZE = 1000
 CHUNK_OVERLAP = 200
 
