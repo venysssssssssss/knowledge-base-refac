@@ -50,7 +50,7 @@ MODEL_NAME = "mistral:latest"
 
 class QueryRequest(BaseModel):
     question: str
-    context: str = ""
+    context_chunks: List[str] = []  # Lista de chunks vindos do Qdrant
     max_tokens: int = 512
     temperature: float = 0.7
 
@@ -100,12 +100,13 @@ async def health_check():
 
 @app.post("/query", response_model=QueryResponse)
 async def query_model(request: QueryRequest):
-    """Generate answer based on question and context using Ollama"""
+    """
+    Gera resposta baseada na pergunta e nos chunks de contexto vindos do Qdrant.
+    O modelo Mistral 7B responderá EXCLUSIVAMENTE com base no contexto fornecido.
+    """
     start_time = time.time()
-    
-    # Format prompt for Mistral
-    prompt = format_mistral_prompt(request.question, request.context)
-    
+    # Formata o prompt usando os chunks
+    prompt = format_mistral_prompt(request.question, request.context_chunks)
     try:
         async with httpx.AsyncClient(timeout=30.0) as client:
             payload = {
@@ -118,49 +119,38 @@ async def query_model(request: QueryRequest):
                     "top_p": 0.9
                 }
             }
-            
             response = await client.post(f"{OLLAMA_BASE_URL}/api/generate", json=payload)
-            
             if response.status_code != 200:
                 raise HTTPException(status_code=500, detail=f"Ollama error: {response.text}")
-            
             result = response.json()
             answer = result.get("response", "").strip()
-            
             if not answer:
                 raise HTTPException(status_code=500, detail="No response generated")
-            
             processing_time = time.time() - start_time
-            
-            # Estimate tokens (rough approximation)
-            tokens_used = len(answer.split()) * 1.3  # Rough token estimation
-            
+            tokens_used = len(answer.split()) * 1.3  # Estimativa simples
             return QueryResponse(
                 answer=answer,
                 tokens_used=int(tokens_used),
                 processing_time=processing_time
             )
-        
     except httpx.TimeoutException:
         raise HTTPException(status_code=504, detail="Request timeout")
     except Exception as e:
         inference_logger.error(f"Generation error: {e}")
         raise HTTPException(status_code=500, detail=f"Generation failed: {str(e)}")
 
-def format_mistral_prompt(question: str, context: str = "") -> str:
-    """Format prompt for Mistral Instruct model"""
-    if context:
-        prompt = f"""<s>[INST] Com base no contexto fornecido, responda à pergunta de forma clara e precisa.
-
-Contexto:
-{context}
-
-Pergunta: {question}
-
-Responda apenas com base nas informações do contexto fornecido. Se a informação não estiver disponível no contexto, diga que não tem informação suficiente. [/INST]"""
+def format_mistral_prompt(question: str, context_chunks: List[str] = None) -> str:
+    """
+    Formata o prompt para o Mistral Instruct, usando os chunks do Qdrant como contexto.
+    Inclui instrução explícita para responder SOMENTE com base no contexto fornecido.
+    """
+    context_chunks = context_chunks or []
+    if context_chunks:
+        # Junta os chunks, separando por linha e indicando metadados
+        context = "\n\n".join([f"Chunk {i+1}:\n{chunk}" for i, chunk in enumerate(context_chunks)])
+        prompt = f"""<s>[INST] Você é um assistente de documentos. Responda à pergunta EXCLUSIVAMENTE com base no contexto fornecido abaixo. Não invente, não extrapole, não utilize conhecimento externo. Se não encontrar a resposta no contexto, diga: 'Não encontrado no documento.'\n\nContexto:\n{context}\n\nPergunta: {question}\n\nResponda apenas com base nas informações do contexto fornecido. [/INST]"""
     else:
         prompt = f"<s>[INST] {question} [/INST]"
-    
     return prompt
 
 @app.get("/stats")
