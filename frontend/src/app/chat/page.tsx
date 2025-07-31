@@ -2,6 +2,15 @@
 
 import { useEffect, useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
+import { ChatLogger, useChatLogger } from '@/app/chat/registroschatELK';
+import {
+    saveMessageToCache,
+    loadCachedMessages,
+    removeFromCache,
+    checkConnectionStatus,
+    setupConnectionListener,
+    processFileForOffline
+} from './chatCache';
 
 type Message = {
     id: string;
@@ -15,10 +24,27 @@ type Message = {
 type Attachment = {
     id: string;
     name: string;
-    type: 'pdf' | 'image' | 'document';
+    type: 'pdf' | 'image' | 'document' | 'spreadsheet' | 'presentation';
     size: number;
     progress?: number;
+    extension?: string;
 };
+
+const ALLOWED_FILE_TYPES = [
+    'application/pdf',
+    'image/jpeg',
+    'image/png',
+    'image/gif',
+    'application/msword',
+    'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+    'application/vnd.ms-excel',
+    'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+    'application/vnd.ms-powerpoint',
+    'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+    'text/plain'
+];
+
+const MAX_FILE_SIZE = 10 * 1024 * 1024; // 10MB
 
 export default function ChatPage() {
     const router = useRouter();
@@ -27,21 +53,66 @@ export default function ChatPage() {
     const [isTyping, setIsTyping] = useState(false);
     const [isUploading, setIsUploading] = useState(false);
     const [uploadProgress, setUploadProgress] = useState(0);
+    const [isOnline, setIsOnline] = useState(true);
     const messagesEndRef = useRef<HTMLDivElement>(null);
     const inputRef = useRef<HTMLInputElement>(null);
     const fileInputRef = useRef<HTMLInputElement>(null);
     const [isClient, setIsClient] = useState(false);
 
+    // Usando o hook do logger
+    const { logs, addLog, addError, addWarning, addInfo, addRequest, addResponse, clearLogs } = useChatLogger();
+
     useEffect(() => {
         setIsClient(true);
-        setMessages([
-            {
-                id: '1',
-                text: 'Olá! Como posso te ajudar hoje? Você pode me enviar documentos ou perguntas diretamente.',
-                sender: 'bot',
-                timestamp: new Date(),
-            },
-        ]);
+
+        // Verificar status de conexão inicial
+        setIsOnline(checkConnectionStatus());
+
+        // Carregar mensagens do cache
+        const loadCachedData = async () => {
+            try {
+                const cachedMessages = await loadCachedMessages();
+                if (cachedMessages.length > 0) {
+                    setMessages(cachedMessages);
+                    addInfo('Mensagens carregadas do cache offline', { count: cachedMessages.length });
+                } else {
+                    setMessages([{
+                        id: '1',
+                        text: 'Olá! Como posso te ajudar hoje? Você pode me enviar documentos ou perguntas diretamente.',
+                        sender: 'bot',
+                        timestamp: new Date(),
+                    }]);
+                }
+            } catch (error) {
+                addError('Erro ao carregar mensagens do cache', {
+                    error: error instanceof Error ? error.message : 'Erro desconhecido'
+                });
+                setMessages([{
+                    id: '1',
+                    text: 'Olá! Como posso te ajudar hoje? Você pode me enviar documentos ou perguntas diretamente.',
+                    sender: 'bot',
+                    timestamp: new Date(),
+                }]);
+            }
+        };
+
+        loadCachedData();
+        addInfo('Sessão de chat iniciada');
+
+        // Configurar listener de conexão
+        const cleanupListener = setupConnectionListener((online) => {
+            setIsOnline(online);
+            addInfo(online ? 'Conexão restaurada' : 'Modo offline ativado');
+
+            if (online) {
+                // Tentar sincronizar mensagens pendentes quando a conexão voltar
+                // (Implementar lógica de sincronização conforme necessário)
+            }
+        });
+
+        return () => {
+            cleanupListener();
+        };
     }, []);
 
     useEffect(() => {
@@ -49,9 +120,11 @@ export default function ChatPage() {
 
         const isAuthenticated = localStorage.getItem('authenticated') === 'true';
         if (!isAuthenticated) {
+            addWarning('Usuário não autenticado, redirecionando para login');
             router.push('/login');
         } else {
             inputRef.current?.focus();
+            addInfo('Usuário autenticado, chat pronto para uso');
         }
     }, [router, isClient]);
 
@@ -72,21 +145,78 @@ export default function ChatPage() {
             sender: 'user',
             timestamp: new Date(),
         };
+
+        addRequest('Mensagem do usuário', {
+            messageId: userMessage.id,
+            messageLength: userMessage.text.length,
+            truncatedText: userMessage.text.length > 50
+                ? userMessage.text.substring(0, 50) + '...'
+                : userMessage.text
+        });
+
+        // Salvar no cache imediatamente
+        await saveMessageToCache(userMessage);
         setMessages((prev) => [...prev, userMessage]);
         setInputValue('');
         setIsTyping(true);
 
-        // Simular resposta após 1-3 segundos
-        setTimeout(() => {
+        try {
+            if (!isOnline) {
+                // Modo offline - simular resposta do bot
+                await new Promise(resolve => setTimeout(resolve, 1000));
+
+                const botMessage: Message = {
+                    id: (Date.now() + 1).toString(),
+                    text: 'Estou offline no momento. Sua mensagem foi salva e será processada quando a conexão for restaurada.',
+                    sender: 'bot',
+                    timestamp: new Date(),
+                };
+
+                await saveMessageToCache(botMessage);
+                setMessages((prev) => [...prev, botMessage]);
+                addWarning('Modo offline - mensagem salva localmente');
+                return;
+            }
+
+            // Simulando processamento do bot (online)
+            await new Promise(resolve => setTimeout(resolve, 1000 + Math.random() * 2000));
+
             const botMessage: Message = {
                 id: (Date.now() + 1).toString(),
                 text: getRandomResponse(),
                 sender: 'bot',
                 timestamp: new Date(),
             };
+
+            addResponse('Resposta do bot', {
+                userMessageId: userMessage.id,
+                botMessageId: botMessage.id,
+                responseTimeMs: botMessage.timestamp.getTime() - userMessage.timestamp.getTime()
+            });
+
+            await saveMessageToCache(botMessage);
             setMessages((prev) => [...prev, botMessage]);
+        } catch (error) {
+            addError('Falha ao processar mensagem', {
+                error: error instanceof Error ? error.message : 'Erro desconhecido',
+                inputMessage: userMessage.text
+            });
+        } finally {
             setIsTyping(false);
-        }, 1000 + Math.random() * 2000);
+        }
+    };
+
+    const getFileType = (file: File): Attachment['type'] => {
+        if (file.type.includes('pdf')) return 'pdf';
+        if (file.type.includes('image')) return 'image';
+        if (file.type.includes('spreadsheet') || file.type.includes('excel')) return 'spreadsheet';
+        if (file.type.includes('presentation') || file.type.includes('powerpoint')) return 'presentation';
+        if (file.type.includes('word') || file.type.includes('document')) return 'document';
+        return 'document';
+    };
+
+    const getFileExtension = (fileName: string): string => {
+        return fileName.split('.').pop()?.toLowerCase() || '';
     };
 
     const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -94,21 +224,68 @@ export default function ChatPage() {
         if (!files || files.length === 0) return;
 
         const file = files[0];
-        if (file.size > 10 * 1024 * 1024) {
-            alert('O arquivo é muito grande. Tamanho máximo: 10MB');
+        const fileExtension = getFileExtension(file.name);
+
+        addInfo('Upload de arquivo iniciado', {
+            fileName: file.name,
+            fileType: file.type,
+            fileSize: file.size,
+            fileExtension
+        });
+
+        // Validar tipo de arquivo
+        if (!ALLOWED_FILE_TYPES.includes(file.type)) {
+            addError('Tipo de arquivo não suportado', {
+                fileName: file.name,
+                fileType: file.type,
+                allowedTypes: ALLOWED_FILE_TYPES
+            });
+
+            const errorMessage: Message = {
+                id: Date.now().toString(),
+                text: `Erro: Tipo de arquivo não suportado (${fileExtension || file.type}). Formatos aceitos: PDF, DOC, DOCX, XLS, XLSX, PPT, PPTX, JPG, PNG, GIF, TXT`,
+                sender: 'bot',
+                timestamp: new Date(),
+            };
+
+            await saveMessageToCache(errorMessage);
+            setMessages(prev => [...prev, errorMessage]);
+            return;
+        }
+
+        // Validar tamanho do arquivo
+        if (file.size > MAX_FILE_SIZE) {
+            addWarning('Upload rejeitado - arquivo muito grande', {
+                fileName: file.name,
+                fileSize: file.size,
+                maxAllowed: '10MB'
+            });
+
+            const errorMessage: Message = {
+                id: Date.now().toString(),
+                text: `Erro: O arquivo é muito grande (${formatFileSize(file.size)}). Tamanho máximo permitido: 10MB`,
+                sender: 'bot',
+                timestamp: new Date(),
+            };
+
+            await saveMessageToCache(errorMessage);
+            setMessages(prev => [...prev, errorMessage]);
             return;
         }
 
         setIsUploading(true);
         setUploadProgress(0);
 
-        // Criar mensagem de upload
+        // Processar arquivo para armazenamento offline
+        const processedFile = await processFileForOffline(file);
+
         const attachment: Attachment = {
-            id: Date.now().toString(),
-            name: file.name,
-            type: file.type.includes('pdf') ? 'pdf' : file.type.includes('image') ? 'image' : 'document',
-            size: file.size,
+            id: processedFile.id,
+            name: processedFile.name,
+            type: processedFile.type,
+            size: processedFile.size,
             progress: 0,
+            extension: processedFile.extension
         };
 
         const userMessage: Message = {
@@ -120,9 +297,10 @@ export default function ChatPage() {
             isProcessing: true
         };
 
+        // Salvar no cache imediatamente
+        await saveMessageToCache(userMessage);
         setMessages((prev) => [...prev, userMessage]);
 
-        // Simular upload
         const uploadInterval = setInterval(() => {
             setUploadProgress((prev) => {
                 const newProgress = prev + Math.random() * 10;
@@ -135,41 +313,101 @@ export default function ChatPage() {
         }, 200);
 
         try {
-            // Enviar para a API
-            const formData = new FormData();
-            formData.append('file', file);
+            if (!isOnline) {
+                // Modo offline - apenas armazenar localmente
+                await new Promise(resolve => setTimeout(resolve, 1500));
 
-            const response = await fetch('/api/upload', {
-                method: 'POST',
-                body: formData,
-            });
+                const botMessage: Message = {
+                    id: (Date.now() + 1).toString(),
+                    text: 'Arquivo recebido em modo offline. Será processado quando a conexão for restaurada.',
+                    sender: 'bot',
+                    timestamp: new Date(),
+                };
 
-            const data = await response.json();
-
-            if (data.success) {
-                // Atualizar mensagem com a resposta
+                await saveMessageToCache(botMessage);
                 setMessages(prev => prev.map(msg =>
                     msg.id === userMessage.id
                         ? {
                             ...msg,
                             isProcessing: false,
-                            text: data.message
+                            text: 'Arquivo salvo localmente (modo offline)'
                         }
                         : msg
                 ));
+                setMessages(prev => [...prev, botMessage]);
+                addWarning('Modo offline - arquivo salvo localmente');
+                return;
+            }
+
+            const formData = new FormData();
+            formData.append('file', file);
+
+            // Adicionar token de autenticação se necessário
+            const token = localStorage.getItem('token');
+            if (token) {
+                formData.append('token', token);
+            }
+
+            const response = await fetch('/api/upload', {
+                method: 'POST',
+                body: formData,
+                headers: {
+                    'Authorization': `Bearer ${token || ''}`
+                }
+            });
+
+            if (!response.ok) {
+                throw new Error(response.status === 401 ? 'Não autorizado - token inválido ou expirado' :
+                    response.status === 413 ? 'Arquivo muito grande' :
+                        'Erro no servidor');
+            }
+
+            const data = await response.json();
+
+            if (data.success) {
+                addInfo('Upload de arquivo concluído com sucesso', {
+                    fileName: file.name,
+                    fileSize: file.size,
+                    processingTimeMs: Date.now() - userMessage.timestamp.getTime(),
+                    serverResponse: data
+                });
+
+                const updatedMessage: Message = {
+                    ...userMessage,
+                    isProcessing: false,
+                    text: data.message || 'Arquivo processado com sucesso'
+                };
+
+                await saveMessageToCache(updatedMessage);
+                setMessages(prev => prev.map(msg =>
+                    msg.id === userMessage.id ? updatedMessage : msg
+                ));
             } else {
-                throw new Error(data.message || 'Erro no upload');
+                throw new Error(data.message || 'Erro no processamento do arquivo');
             }
         } catch (error) {
-            setMessages(prev => [...prev, {
+            addError('Falha no upload de arquivo', {
+                fileName: file.name,
+                error: error instanceof Error ? error.message : 'Erro desconhecido',
+                fileType: file.type,
+                fileSize: file.size
+            });
+
+            const errorMessage: Message = {
                 id: Date.now().toString(),
                 text: `Erro ao processar arquivo: ${error instanceof Error ? error.message : 'Erro desconhecido'}`,
                 sender: 'bot',
                 timestamp: new Date(),
-            }]);
+            };
+
+            await saveMessageToCache(errorMessage);
+            setMessages(prev => [...prev, errorMessage]);
         } finally {
             setIsUploading(false);
             setUploadProgress(0);
+            if (fileInputRef.current) {
+                fileInputRef.current.value = '';
+            }
         }
     };
 
@@ -205,13 +443,72 @@ export default function ChatPage() {
         fileInputRef.current?.click();
     };
 
+    const getFileIcon = (type: Attachment['type']) => {
+        switch (type) {
+            case 'pdf':
+                return (
+                    <path
+                        strokeLinecap="round"
+                        strokeLinejoin="round"
+                        strokeWidth={2}
+                        d="M7 21h10a2 2 0 002-2V9.414a1 1 0 00-.293-.707l-5.414-5.414A1 1 0 0012.586 3H7a2 2 0 00-2 2v14a2 2 0 002 2z"
+                    />
+                );
+            case 'image':
+                return (
+                    <path
+                        strokeLinecap="round"
+                        strokeLinejoin="round"
+                        strokeWidth={2}
+                        d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z"
+                    />
+                );
+            case 'spreadsheet':
+                return (
+                    <path
+                        strokeLinecap="round"
+                        strokeLinejoin="round"
+                        strokeWidth={2}
+                        d="M9 17v-2m3 2v-4m3 4v-6m2 10H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"
+                    />
+                );
+            case 'presentation':
+                return (
+                    <path
+                        strokeLinecap="round"
+                        strokeLinejoin="round"
+                        strokeWidth={2}
+                        d="M15 15l-2 5L9 9l11 4-5 2zm0 0l5 5M7.188 2.239l.777 2.897M5.136 7.965l-2.898-.777M13.95 4.05l-2.122 2.122m-5.657 5.656l-2.12 2.122"
+                    />
+                );
+            default:
+                return (
+                    <path
+                        strokeLinecap="round"
+                        strokeLinejoin="round"
+                        strokeWidth={2}
+                        d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"
+                    />
+                );
+        }
+    };
+
+    const getFileTypeColor = (type: Attachment['type']) => {
+        switch (type) {
+            case 'pdf': return 'bg-red-500/20 border border-red-500/30';
+            case 'image': return 'bg-blue-500/20 border border-blue-500/30';
+            case 'spreadsheet': return 'bg-green-500/20 border border-green-500/30';
+            case 'presentation': return 'bg-purple-500/20 border border-purple-500/30';
+            default: return 'bg-gray-500/20 border border-gray-500/30';
+        }
+    };
+
     if (!isClient) {
         return null;
     }
 
     return (
         <div className="min-h-screen bg-gradient-to-br from-gray-900 to-gray-800 text-white">
-            {/* Floating background elements with improved styling */}
             <div className="fixed inset-0 overflow-hidden pointer-events-none">
                 <div className="absolute top-1/4 left-1/4 w-64 h-64 rounded-full bg-emerald-900/20 blur-3xl animate-float-slow"></div>
                 <div className="absolute bottom-1/3 right-1/3 w-96 h-96 rounded-full bg-blue-900/20 blur-3xl animate-float"></div>
@@ -219,7 +516,6 @@ export default function ChatPage() {
             </div>
 
             <div className="relative max-w-6xl mx-auto h-screen flex flex-col">
-                {/* Header with improved border */}
                 <header className="relative z-10 py-4 px-6 bg-gray-800/70 backdrop-blur-lg rounded-t-xl border-b border-gray-700/70 flex items-center justify-between shadow-lg border-t border-l border-r border-gray-600/30">
                     <div className="flex items-center space-x-3">
                         <div className="w-10 h-10 rounded-full bg-gradient-to-br from-emerald-500 to-emerald-700 flex items-center justify-center shadow-md">
@@ -243,8 +539,8 @@ export default function ChatPage() {
                                 Assistente de Conhecimento
                             </h1>
                             <p className="text-xs text-gray-400 flex items-center">
-                                <span className={`w-2 h-2 rounded-full mr-1 ${isTyping ? 'bg-yellow-400 animate-pulse' : 'bg-emerald-400'}`}></span>
-                                {isTyping ? 'Digitando...' : 'Online'}
+                                <span className={`w-2 h-2 rounded-full mr-1 ${isTyping ? 'bg-yellow-400 animate-pulse' : isOnline ? 'bg-emerald-400' : 'bg-gray-400'}`}></span>
+                                {isTyping ? 'Digitando...' : isOnline ? 'Online' : 'Offline'}
                             </p>
                         </div>
                     </div>
@@ -266,9 +562,13 @@ export default function ChatPage() {
                     </button>
                 </header>
 
-                {/* Chat container with improved borders */}
                 <div className="relative z-10 flex-1 overflow-hidden bg-gray-800/40 backdrop-blur-lg flex flex-col shadow-lg border-l border-r border-gray-700/50">
-                    {/* Messages area with subtle border effect */}
+                    {!isOnline && (
+                        <div className="bg-yellow-500/20 text-yellow-300 text-sm p-2 text-center border-b border-yellow-500/30">
+                            Você está offline. As mensagens serão salvas localmente e enviadas quando a conexão for restaurada.
+                        </div>
+                    )}
+
                     <div className="flex-1 overflow-y-auto p-4 space-y-4">
                         {messages.map((message) => (
                             <div
@@ -280,7 +580,6 @@ export default function ChatPage() {
                                         ? 'bg-gradient-to-br from-emerald-600 to-emerald-700 rounded-tr-none shadow-md border border-emerald-500/30'
                                         : 'bg-gray-700/80 rounded-tl-none shadow-md border border-gray-600/30'}`}
                                 >
-                                    {/* Processing indicator for file messages */}
                                     {message.isProcessing && (
                                         <div className="absolute -top-2 -right-2 bg-yellow-500 text-white text-xs px-2 py-1 rounded-full animate-pulse">
                                             Processando...
@@ -292,11 +591,7 @@ export default function ChatPage() {
                                     {message.attachments?.map((attachment) => (
                                         <div key={attachment.id} className="mt-2 bg-black/20 rounded-lg p-3 border border-gray-700/50">
                                             <div className="flex items-center space-x-3">
-                                                <div className={`p-2 rounded-lg ${attachment.type === 'pdf'
-                                                    ? 'bg-red-500/20 border border-red-500/30'
-                                                    : attachment.type === 'image'
-                                                        ? 'bg-blue-500/20 border border-blue-500/30'
-                                                        : 'bg-gray-500/20 border border-gray-500/30'}`}>
+                                                <div className={`p-2 rounded-lg ${getFileTypeColor(attachment.type)}`}>
                                                     <svg
                                                         xmlns="http://www.w3.org/2000/svg"
                                                         className="h-5 w-5"
@@ -304,33 +599,16 @@ export default function ChatPage() {
                                                         viewBox="0 0 24 24"
                                                         stroke="currentColor"
                                                     >
-                                                        {attachment.type === 'pdf' ? (
-                                                            <path
-                                                                strokeLinecap="round"
-                                                                strokeLinejoin="round"
-                                                                strokeWidth={2}
-                                                                d="M7 21h10a2 2 0 002-2V9.414a1 1 0 00-.293-.707l-5.414-5.414A1 1 0 0012.586 3H7a2 2 0 00-2 2v14a2 2 0 002 2z"
-                                                            />
-                                                        ) : attachment.type === 'image' ? (
-                                                            <path
-                                                                strokeLinecap="round"
-                                                                strokeLinejoin="round"
-                                                                strokeWidth={2}
-                                                                d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z"
-                                                            />
-                                                        ) : (
-                                                            <path
-                                                                strokeLinecap="round"
-                                                                strokeLinejoin="round"
-                                                                strokeWidth={2}
-                                                                d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"
-                                                            />
-                                                        )}
+                                                        {getFileIcon(attachment.type)}
                                                     </svg>
                                                 </div>
                                                 <div className="flex-1 min-w-0">
                                                     <p className="text-sm font-medium text-white truncate">{attachment.name}</p>
-                                                    <p className="text-xs text-gray-300">{formatFileSize(attachment.size)}</p>
+                                                    <div className="flex justify-between items-center">
+                                                        <p className="text-xs text-gray-300">
+                                                            {attachment.extension ? attachment.extension.toUpperCase() : ''} • {formatFileSize(attachment.size)}
+                                                        </p>
+                                                    </div>
                                                     {message.isProcessing && (
                                                         <div className="w-full bg-gray-700 rounded-full h-1.5 mt-1 overflow-hidden">
                                                             <div
@@ -369,13 +647,13 @@ export default function ChatPage() {
                         <div ref={messagesEndRef} />
                     </div>
 
-                    {/* Input area with improved border */}
                     <div className="p-4 border-t border-gray-700/50 bg-gray-800/40 backdrop-blur-sm">
                         <div className="relative flex items-center">
                             <button
                                 onClick={triggerFileInput}
                                 className="p-2 text-gray-400 hover:text-emerald-400 transition-colors mr-2 hover:bg-gray-700/50 rounded-lg"
                                 title="Anexar arquivo"
+                                disabled={isUploading}
                             >
                                 <svg
                                     xmlns="http://www.w3.org/2000/svg"
@@ -395,8 +673,9 @@ export default function ChatPage() {
                                     ref={fileInputRef}
                                     type="file"
                                     onChange={handleFileUpload}
-                                    accept=".pdf,.doc,.docx,.txt,.jpg,.jpeg,.png"
+                                    accept=".pdf,.doc,.docx,.xls,.xlsx,.ppt,.pptx,.jpg,.jpeg,.png,.gif,.txt"
                                     className="hidden"
+                                    disabled={isUploading}
                                 />
                             </button>
 
@@ -406,14 +685,17 @@ export default function ChatPage() {
                                 value={inputValue}
                                 onChange={(e) => setInputValue(e.target.value)}
                                 onKeyDown={handleKeyDown}
-                                placeholder="Digite sua mensagem ou envie um arquivo..."
+                                placeholder={isOnline
+                                    ? "Digite sua mensagem ou envie um arquivo..."
+                                    : "Modo offline - mensagens serão salvas localmente"}
                                 className="flex-1 bg-gray-700/50 border border-gray-600 rounded-xl py-3 px-4 pr-12 text-white focus:outline-none focus:ring-2 focus:ring-emerald-500 focus:border-transparent backdrop-blur-sm transition-all duration-200 placeholder-gray-400"
+                                disabled={isUploading}
                             />
 
                             <button
                                 onClick={handleSendMessage}
-                                disabled={inputValue.trim() === ''}
-                                className={`absolute right-3 p-1 rounded-full transition-all ${inputValue.trim() === ''
+                                disabled={inputValue.trim() === '' || isUploading}
+                                className={`absolute right-3 p-1 rounded-full transition-all ${inputValue.trim() === '' || isUploading
                                     ? 'text-gray-500'
                                     : 'text-emerald-400 hover:text-white bg-emerald-600/30 hover:bg-emerald-600/50'}`}
                             >
@@ -453,6 +735,8 @@ export default function ChatPage() {
                                     </svg>
                                     Enviando arquivo... {Math.round(uploadProgress)}%
                                 </span>
+                            ) : !isOnline ? (
+                                <span className="text-yellow-400">Modo offline ativado</span>
                             ) : (
                                 'O assistente pode cometer erros. Verifique informações importantes.'
                             )}
@@ -461,7 +745,8 @@ export default function ChatPage() {
                 </div>
             </div>
 
-            {/* Adicionando animações CSS */}
+            <ChatLogger logs={logs} floating />
+
             <style jsx global>{`
                 @keyframes float {
                     0%, 100% { transform: translateY(0) rotate(0deg); }
