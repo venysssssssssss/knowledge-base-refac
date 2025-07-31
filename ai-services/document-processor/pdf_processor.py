@@ -64,7 +64,7 @@ logger = logging.getLogger(__name__)
 # Configuration
 QDRANT_URL = "http://qdrant:6333"
 COLLECTION_NAME = "knowledge_base"
-EMBEDDING_MODEL = "all-MiniLM-L6-v2"  # Lightweight sentence transformer model
+EMBEDDING_MODEL = "sentence-transformers/all-MiniLM-L6-v2"  # Lightweight sentence transformer model
 CHUNK_SIZE = 1000
 CHUNK_OVERLAP = 200
 
@@ -239,58 +239,189 @@ class DocumentProcessor:
             raise HTTPException(status_code=400, detail=f"Failed to extract text from PDF: {str(e)}")
     
     def chunk_text(self, text: str, filename: str) -> List[DocumentChunk]:
-        """Chunk text respeitando limites de tokens/frases, evitando cortes abruptos"""
+        """
+        Chunking inteligente: divide por seções e parágrafos, preservando contexto e metadados estruturados.
+        - Detecta títulos/seções por heurística (ex: linhas em maiúsculo, numeradas, etc)
+        - Cada chunk = parágrafo, com metadados de seção/título
+        - Se parágrafo for muito longo, divide por frases, mas preserva início/fim
+        """
+        import re
         from transformers import AutoTokenizer
         tokenizer = AutoTokenizer.from_pretrained(EMBEDDING_MODEL)
-        sentences = text.split('. ')
+        # Heurística para seções: linhas em maiúsculo, numeradas, ou com ':'
+        section_pattern = re.compile(r'^(\d+\.|[A-Z][A-Z\s\d\-]+:?)$')
+        lines = text.splitlines()
         chunks = []
-        current_chunk = ''
-        current_tokens = 0
+        current_section = ""
+        section_index = 0
+        paragraph_index = 0
         chunk_index = 0
-        for sentence in sentences:
-            sentence = sentence.strip()
-            if not sentence:
+        paragraph_buffer = []
+        for line in lines:
+            line = line.strip()
+            if not line:
+                # Fim de parágrafo
+                if paragraph_buffer:
+                    paragraph = " ".join(paragraph_buffer).strip()
+                    tokens = len(tokenizer.encode(paragraph, add_special_tokens=False))
+                    # Se parágrafo for muito longo, divide por frases
+                    if tokens > CHUNK_SIZE:
+                        sentences = re.split(r'(?<=[.!?]) +', paragraph)
+                        sub_chunk = ""
+                        sub_tokens = 0
+                        sub_index = 0
+                        for sent in sentences:
+                            sent = sent.strip()
+                            if not sent:
+                                continue
+                            sent_tokens = len(tokenizer.encode(sent, add_special_tokens=False))
+                            if sub_tokens + sent_tokens > CHUNK_SIZE:
+                                if len(sub_chunk.strip()) > 30:
+                                    chunk = DocumentChunk(
+                                        chunk_id=str(uuid.uuid4()),
+                                        text=sub_chunk.strip(),
+                                        embedding=[],
+                                        metadata={
+                                            "filename": filename,
+                                            "section": current_section,
+                                            "section_index": section_index,
+                                            "paragraph_index": paragraph_index,
+                                            "sub_chunk_index": sub_index,
+                                            "chunk_index": chunk_index,
+                                            "source": "pdf"
+                                        }
+                                    )
+                                    chunks.append(chunk)
+                                    chunk_index += 1
+                                    sub_index += 1
+                                sub_chunk = sent
+                                sub_tokens = sent_tokens
+                            else:
+                                if sub_chunk:
+                                    sub_chunk += " " + sent
+                                else:
+                                    sub_chunk = sent
+                                sub_tokens += sent_tokens
+                        if len(sub_chunk.strip()) > 30:
+                            chunk = DocumentChunk(
+                                chunk_id=str(uuid.uuid4()),
+                                text=sub_chunk.strip(),
+                                embedding=[],
+                                metadata={
+                                    "filename": filename,
+                                    "section": current_section,
+                                    "section_index": section_index,
+                                    "paragraph_index": paragraph_index,
+                                    "sub_chunk_index": sub_index,
+                                    "chunk_index": chunk_index,
+                                    "source": "pdf"
+                                }
+                            )
+                            chunks.append(chunk)
+                            chunk_index += 1
+                    else:
+                        if len(paragraph.strip()) > 30:
+                            chunk = DocumentChunk(
+                                chunk_id=str(uuid.uuid4()),
+                                text=paragraph.strip(),
+                                embedding=[],
+                                metadata={
+                                    "filename": filename,
+                                    "section": current_section,
+                                    "section_index": section_index,
+                                    "paragraph_index": paragraph_index,
+                                    "chunk_index": chunk_index,
+                                    "source": "pdf"
+                                }
+                            )
+                            chunks.append(chunk)
+                            chunk_index += 1
+                    paragraph_index += 1
+                    paragraph_buffer = []
                 continue
-            tokens = len(tokenizer.encode(sentence, add_special_tokens=False))
-            if current_tokens + tokens > CHUNK_SIZE:
-                if len(current_chunk.strip()) > 50:
+            # Detecta se é título/seção
+            if section_pattern.match(line):
+                current_section = line
+                section_index += 1
+                paragraph_index = 0
+                continue
+            paragraph_buffer.append(line)
+        # Último parágrafo
+        if paragraph_buffer:
+            paragraph = " ".join(paragraph_buffer).strip()
+            tokens = len(tokenizer.encode(paragraph, add_special_tokens=False))
+            if tokens > CHUNK_SIZE:
+                sentences = re.split(r'(?<=[.!?]) +', paragraph)
+                sub_chunk = ""
+                sub_tokens = 0
+                sub_index = 0
+                for sent in sentences:
+                    sent = sent.strip()
+                    if not sent:
+                        continue
+                    sent_tokens = len(tokenizer.encode(sent, add_special_tokens=False))
+                    if sub_tokens + sent_tokens > CHUNK_SIZE:
+                        if len(sub_chunk.strip()) > 30:
+                            chunk = DocumentChunk(
+                                chunk_id=str(uuid.uuid4()),
+                                text=sub_chunk.strip(),
+                                embedding=[],
+                                metadata={
+                                    "filename": filename,
+                                    "section": current_section,
+                                    "section_index": section_index,
+                                    "paragraph_index": paragraph_index,
+                                    "sub_chunk_index": sub_index,
+                                    "chunk_index": chunk_index,
+                                    "source": "pdf"
+                                }
+                            )
+                            chunks.append(chunk)
+                            chunk_index += 1
+                            sub_index += 1
+                        sub_chunk = sent
+                        sub_tokens = sent_tokens
+                    else:
+                        if sub_chunk:
+                            sub_chunk += " " + sent
+                        else:
+                            sub_chunk = sent
+                        sub_tokens += sent_tokens
+                if len(sub_chunk.strip()) > 30:
                     chunk = DocumentChunk(
                         chunk_id=str(uuid.uuid4()),
-                        text=current_chunk.strip(),
+                        text=sub_chunk.strip(),
                         embedding=[],
                         metadata={
                             "filename": filename,
+                            "section": current_section,
+                            "section_index": section_index,
+                            "paragraph_index": paragraph_index,
+                            "sub_chunk_index": sub_index,
                             "chunk_index": chunk_index,
-                            "chunk_size": current_tokens,
                             "source": "pdf"
                         }
                     )
                     chunks.append(chunk)
                     chunk_index += 1
-                # Inicia novo chunk
-                current_chunk = sentence
-                current_tokens = tokens
             else:
-                if current_chunk:
-                    current_chunk += '. ' + sentence
-                else:
-                    current_chunk = sentence
-                current_tokens += tokens
-        # Adiciona último chunk
-        if len(current_chunk.strip()) > 50:
-            chunk = DocumentChunk(
-                chunk_id=str(uuid.uuid4()),
-                text=current_chunk.strip(),
-                embedding=[],
-                metadata={
-                    "filename": filename,
-                    "chunk_index": chunk_index,
-                    "chunk_size": current_tokens,
-                    "source": "pdf"
-                }
-            )
-            chunks.append(chunk)
-        logger.info(f"Chunking gerou {len(chunks)} chunks para {filename}")
+                if len(paragraph.strip()) > 30:
+                    chunk = DocumentChunk(
+                        chunk_id=str(uuid.uuid4()),
+                        text=paragraph.strip(),
+                        embedding=[],
+                        metadata={
+                            "filename": filename,
+                            "section": current_section,
+                            "section_index": section_index,
+                            "paragraph_index": paragraph_index,
+                            "chunk_index": chunk_index,
+                            "source": "pdf"
+                        }
+                    )
+                    chunks.append(chunk)
+                    chunk_index += 1
+        logger.info(f"Chunking inteligente gerou {len(chunks)} chunks para {filename}")
         return chunks
     
     async def generate_embeddings(self, chunks: List[str]) -> List[List[float]]:
@@ -396,7 +527,7 @@ async def upload_pdf(file: UploadFile = File(...)):
         logger.info(f"Created {len(chunks)} chunks for {file.filename}")
         
         # Generate embeddings
-        embeddings = await processor.generate_embeddings([chunk.content for chunk in chunks])
+        embeddings = await processor.generate_embeddings([chunk.text for chunk in chunks])
         
         # Store in Qdrant
         await processor.store_in_qdrant(chunks, embeddings, document_id)
