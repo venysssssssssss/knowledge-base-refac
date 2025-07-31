@@ -80,7 +80,7 @@ class EmbeddingService:
     def __init__(self, model_name: str = EMBEDDING_MODEL):
         self.model_name = model_name
         self.model = None
-        self.embedding_dim = 384  # all-MiniLM-L6-v2 dimension
+        self.embedding_dim = 768  # all-MiniLM-L6-v2 dimension
         
     async def initialize(self):
         """Initialize the embedding model"""
@@ -175,9 +175,8 @@ class DocumentProcessor:
             if COLLECTION_NAME not in collection_names:
                 logger.info(f"Creating collection: {COLLECTION_NAME}")
                 
-                # Use default embedding dimension since model might not be loaded yet
-                embedding_dim = 384  # Default for all-MiniLM-L6-v2
-                
+                # Usa a dimensão correta do modelo atual
+                embedding_dim = 768  # all-mpnet-base-v2
                 self.qdrant_client.create_collection(
                     collection_name=COLLECTION_NAME,
                     vectors_config=models.VectorParams(
@@ -185,7 +184,7 @@ class DocumentProcessor:
                         distance=models.Distance.COSINE
                     )
                 )
-                logger.info(f"✅ Collection {COLLECTION_NAME} created")
+                logger.info(f"✅ Collection {COLLECTION_NAME} created with dim {embedding_dim}")
             else:
                 logger.info(f"✅ Collection {COLLECTION_NAME} already exists")
         except Exception as e:
