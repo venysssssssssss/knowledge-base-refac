@@ -96,7 +96,13 @@ class RAGService:
             if response.status_code != 200:
                 rag_logger.error(f"Document search failed: {response.text}")
                 return []
-            return response.json()
+            
+            # Handle different response formats - the document processor might return
+            # either a list of chunks directly or a dict with 'chunks' key
+            response_data = response.json()
+            if isinstance(response_data, dict) and "chunks" in response_data:
+                return response_data["chunks"]
+            return response_data
         except Exception as e:
             rag_logger.error(f"Error searching documents: {e}")
             return []
