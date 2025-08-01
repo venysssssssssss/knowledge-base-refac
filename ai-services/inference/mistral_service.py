@@ -50,9 +50,10 @@ MODEL_NAME = "mistral:latest"
 
 class QueryRequest(BaseModel):
     question: str
-    context_chunks: List[str] = []  # Lista de chunks vindos do Qdrant
+    context: str = ""
     max_tokens: int = 512
     temperature: float = 0.7
+    instructions: str = ""  # Novo campo para instruções específicas
 
 class QueryResponse(BaseModel):
     answer: str
@@ -105,8 +106,8 @@ async def query_model(request: QueryRequest):
     O modelo Mistral 7B responderá EXCLUSIVAMENTE com base no contexto fornecido.
     """
     start_time = time.time()
-    # Formata o prompt usando os chunks
-    prompt = format_mistral_prompt(request.question, request.context_chunks)
+    # Formata o prompt usando os chunks e instruções
+    prompt = format_mistral_prompt(request.question, [request.context], request.instructions)
     try:
         async with httpx.AsyncClient(timeout=30.0) as client:
             payload = {
@@ -139,16 +140,25 @@ async def query_model(request: QueryRequest):
         inference_logger.error(f"Generation error: {e}")
         raise HTTPException(status_code=500, detail=f"Generation failed: {str(e)}")
 
-def format_mistral_prompt(question: str, context_chunks: List[str] = None) -> str:
+def format_mistral_prompt(question: str, context_chunks: List[str] = None, instructions: str = "") -> str:
     """
     Formata o prompt para o Mistral Instruct, usando os chunks do Qdrant como contexto.
     Inclui instrução explícita para responder SOMENTE com base no contexto fornecido.
     """
     context_chunks = context_chunks or []
+    default_instructions = """
+    Você é um assistente de documentos preciso e confiável. 
+    Responda à pergunta EXCLUSIVAMENTE com base no contexto fornecido abaixo.
+    Não invente informações, não extrapole, não utilize conhecimento externo.
+    Se a resposta não estiver claramente no contexto, diga: "A informação solicitada não está disponível nos documentos fornecidos."
+    """
+    
+    # Use instruções personalizadas se fornecidas
+    final_instructions = instructions if instructions else default_instructions
+    
     if context_chunks:
-        # Junta os chunks, separando por linha e indicando metadados
-        context = "\n\n".join([f"Chunk {i+1}:\n{chunk}" for i, chunk in enumerate(context_chunks)])
-        prompt = f"""<s>[INST] Você é um assistente de documentos. Responda à pergunta EXCLUSIVAMENTE com base no contexto fornecido abaixo. Não invente, não extrapole, não utilize conhecimento externo. Se não encontrar a resposta no contexto, diga: 'Não encontrado no documento.'\n\nContexto:\n{context}\n\nPergunta: {question}\n\nResponda apenas com base nas informações do contexto fornecido. [/INST]"""
+        context = "\n".join(context_chunks)
+        prompt = f"""<s>[INST] {final_instructions}\n\nContexto:\n{context}\n\nPergunta: {question}\n\nResponda apenas com base nas informações do contexto fornecido. [/INST]"""
     else:
         prompt = f"<s>[INST] {question} [/INST]"
     return prompt
