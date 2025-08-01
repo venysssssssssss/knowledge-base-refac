@@ -54,6 +54,7 @@ class RAGRequest(BaseModel):
     temperature: float = 0.7
     search_limit: int = 3
     score_threshold: float = 0.7
+    document_id: str = None  # Novo campo opcional para filtrar por documento
 
 class RAGResponse(BaseModel):
     question: str
@@ -78,26 +79,24 @@ class RAGService:
         if self.http_client:
             await self.http_client.aclose()
     
-    async def search_documents(self, query: str, limit: int = 3, score_threshold: float = 0.7) -> List[Dict[str, Any]]:
-        """Search for relevant documents"""
+    async def search_documents(self, query: str, limit: int = 3, score_threshold: float = 0.7, document_id: str = None) -> List[Dict[str, Any]]:
+        """Search for relevant documents, optionally filtering by document_id"""
         try:
             search_payload = {
                 "query": query,
                 "limit": limit,
                 "score_threshold": score_threshold
             }
-            
+            if document_id:
+                search_payload["document_id"] = document_id
             response = await self.http_client.post(
                 f"{DOCUMENT_PROCESSOR_URL}/search",
                 json=search_payload
             )
-            
             if response.status_code != 200:
                 rag_logger.error(f"Document search failed: {response.text}")
                 return []
-            
             return response.json()
-            
         except Exception as e:
             rag_logger.error(f"Error searching documents: {e}")
             return []
@@ -105,11 +104,13 @@ class RAGService:
     async def generate_answer(self, question: str, context: str, max_tokens: int = 512, temperature: float = 0.7) -> Dict[str, Any]:
         """Generate answer using Mistral 7B"""
         try:
+            # Instrução explícita para usar APENAS o contexto fornecido
             mistral_payload = {
                 "question": question,
                 "context": context,
                 "max_tokens": max_tokens,
-                "temperature": temperature
+                "temperature": temperature,
+                "instructions": "Responda APENAS com base no contexto fornecido. Se a informação não estiver no contexto, responda 'A informação solicitada não está disponível nos documentos fornecidos.'"
             }
             
             response = await self.http_client.post(
@@ -126,38 +127,29 @@ class RAGService:
             rag_logger.error(f"Error generating answer: {e}")
             raise HTTPException(status_code=500, detail=f"Answer generation failed: {str(e)}")
     
-    def build_context(self, search_results: List[Dict[str, Any]]) -> str:
-        """Build context from search results"""
-        if not search_results:
-            return ""
-        
-        context_parts = []
-        for i, result in enumerate(search_results, 1):
-            content = result.get("content", "")
-            filename = result.get("metadata", {}).get("filename", "Unknown")
-            score = result.get("score", 0)
-            
-            context_parts.append(f"Documento {i} (Fonte: {filename}, Relevância: {score:.2f}):\n{content}")
-        
-        return "\n\n".join(context_parts)
-    
     async def process_rag_query(self, request: RAGRequest) -> RAGResponse:
-        """Process a complete RAG query"""
+        """Process a complete RAG query, optionally filtering by document_id"""
         start_time = time.time()
+        
+        # Análise da pergunta para melhorar a busca
+        query = request.question
         
         # Step 1: Search for relevant documents
         search_start = time.time()
         search_results = await self.search_documents(
-            query=request.question,
+            query=query,
             limit=request.search_limit,
-            score_threshold=request.score_threshold
+            score_threshold=request.score_threshold,
+            document_id=request.document_id
         )
         search_time = time.time() - search_start
-        
         rag_logger.info(f"Found {len(search_results)} relevant documents in {search_time:.2f}s")
         
         # Step 2: Build context
         context = self.build_context(search_results)
+        
+        # Log do contexto para depuração
+        rag_logger.debug(f"Context built: {len(context)} characters")
         
         # Step 3: Generate answer with Mistral
         generation_start = time.time()
@@ -169,18 +161,19 @@ class RAGService:
                 temperature=request.temperature
             )
         else:
-            # Fallback: answer without context
-            rag_logger.warning("No relevant documents found, answering without context")
-            mistral_response = await self.generate_answer(
+            # Resposta sem contexto
+            rag_logger.warning("No relevant documents found")
+            return RAGResponse(
                 question=request.question,
-                context="",
-                max_tokens=request.max_tokens,
-                temperature=request.temperature
+                answer="Não encontrei informações relevantes sobre essa pergunta nos documentos disponíveis.",
+                sources=[],
+                tokens_used=0,
+                processing_time=time.time() - start_time,
+                search_time=search_time,
+                generation_time=0
             )
-        
         generation_time = time.time() - generation_start
         total_time = time.time() - start_time
-        
         # Step 4: Prepare sources information
         sources = []
         for result in search_results:
@@ -190,7 +183,6 @@ class RAGService:
                 "metadata": result.get("metadata", {})
             }
             sources.append(source)
-        
         return RAGResponse(
             question=request.question,
             answer=mistral_response.get("answer", ""),
