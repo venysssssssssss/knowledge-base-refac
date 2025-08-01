@@ -88,21 +88,25 @@ class EmbeddingService:
             self.model = SentenceTransformer(self.model_name)
             logger.info(f"✅ Embedding model {self.model_name} loaded successfully")
         except Exception as e:
-            logger.error(f"Failed to load embedding model: {e}")
-            # Fallback to simple embedding method
-            self.model = None
+            logger.critical(f"❌ Failed to load embedding model: {e}. Embeddings will NOT be generated. Aborting.")
+            raise RuntimeError(f"Failed to load embedding model: {e}")
             
     async def embed_texts(self, texts: List[str]) -> List[List[float]]:
         """Generate embeddings for a list of texts"""
-        if self.model:
-            try:
-                embeddings = self.model.encode(texts, convert_to_tensor=False)
-                return embeddings.tolist()
-            except Exception as e:
-                logger.warning(f"SentenceTransformer encoding failed: {e}, using fallback")
-                
-        # Fallback method using hash-based embeddings
-        return [self._fallback_embedding(text) for text in texts]
+        if not self.model:
+            logger.critical("❌ Embedding model is not loaded. Aborting embedding generation.")
+            raise RuntimeError("Embedding model is not loaded.")
+        try:
+            embeddings = self.model.encode(texts, convert_to_tensor=False)
+            # Validação: todos embeddings devem ser lista de floats do tamanho correto
+            for emb in embeddings:
+                if not isinstance(emb, (list, tuple)) or len(emb) != self.embedding_dim:
+                    logger.critical(f"❌ Embedding inválido gerado: {emb}")
+                    raise ValueError("Embedding inválido gerado.")
+            return embeddings.tolist()
+        except Exception as e:
+            logger.critical(f"❌ SentenceTransformer encoding failed: {e}. Aborting.")
+            raise RuntimeError(f"Embedding generation failed: {e}")
     
     def _fallback_embedding(self, text: str) -> List[float]:
         """Fallback method to generate simple embeddings using text hashing"""
@@ -436,9 +440,12 @@ class DocumentProcessor:
         return embeddings
     
     async def store_in_qdrant(self, chunks: List[DocumentChunk], embeddings: List[List[float]], document_id: str):
-        """Store chunks and embeddings in Qdrant"""
+        """Store chunks and embeddings in Qdrant, validando embeddings"""
         points = []
         for i, (chunk, embedding) in enumerate(zip(chunks, embeddings)):
+            if not isinstance(embedding, (list, tuple)) or len(embedding) != self.embedding_model.embedding_dim:
+                logger.critical(f"❌ Embedding inválido para chunk {chunk.chunk_id}: {embedding}")
+                raise ValueError(f"Embedding inválido para chunk {chunk.chunk_id}")
             point = models.PointStruct(
                 id=chunk.chunk_id,
                 vector=embedding,
@@ -455,18 +462,34 @@ class DocumentProcessor:
         )
         logger.info(f"✅ Stored {len(points)} chunks in Qdrant for document {document_id}. IDs: {[c.chunk_id for c in chunks]}")
     
-    async def search_similar_chunks(self, query: str, limit: int = 5, score_threshold: float = 0.7) -> List[SearchResult]:
-        """Search for similar chunks in Qdrant, retorna chunks ordenados por relevância"""
+    async def search_similar_chunks(self, query: str, limit: int = 5, score_threshold: float = 0.7, document_id: str = None) -> List[SearchResult]:
+        """Search for similar chunks in Qdrant, retorna chunks ordenados por relevância e contexto concatenado"""
         logger.info(f"Gerando embedding da pergunta...")
         query_embeddings = await self.embedding_model.embed_texts([query])
         query_embedding = query_embeddings[0]
         logger.info(f"Buscando chunks mais relevantes no Qdrant...")
-        search_results = self.qdrant_client.search(
-            collection_name=COLLECTION_NAME,
-            query_vector=query_embedding,
-            limit=limit,
-            score_threshold=score_threshold
-        )
+        
+        # Filtros para busca
+        search_params = {
+            "collection_name": COLLECTION_NAME,
+            "query_vector": query_embedding,
+            "limit": limit,
+            "score_threshold": score_threshold
+        }
+        
+        # Adicionar filtro por document_id se fornecido
+        if document_id:
+            search_params["query_filter"] = models.Filter(
+                must=[
+                    models.FieldCondition(
+                        key="document_id",
+                        match=models.MatchValue(value=document_id)
+                    )
+                ]
+            )
+        
+        search_results = self.qdrant_client.search(**search_params)
+        
         results = []
         for result in search_results:
             search_result = SearchResult(
@@ -476,7 +499,68 @@ class DocumentProcessor:
             )
             results.append(search_result)
         logger.info(f"Busca retornou {len(results)} chunks relevantes.")
-        return sorted(results, key=lambda r: r.score, reverse=True)
+        
+        # Ordenar resultados por score
+        results_sorted = sorted(results, key=lambda r: r.score, reverse=True)
+        
+        # Adicionar contexto de parágrafos vizinhos para melhor coerência
+        if results_sorted and len(results_sorted) > 0:
+            # Identificar parágrafos relacionados para o contexto mais relevante
+            top_result = results_sorted[0]
+            doc_id = top_result.metadata.get("document_id")
+            section = top_result.metadata.get("section")
+            paragraph_idx = top_result.metadata.get("paragraph_index")
+            
+            if doc_id and paragraph_idx is not None:
+                # Buscar parágrafos vizinhos do mesmo documento/seção
+                neighbor_filter = models.Filter(
+                    must=[
+                        models.FieldCondition(
+                            key="document_id", 
+                            match=models.MatchValue(value=doc_id)
+                        )
+                    ],
+                    should=[
+                        models.FieldCondition(
+                            key="paragraph_index",
+                            match=models.MatchValue(value=paragraph_idx-1)
+                        ),
+                        models.FieldCondition(
+                            key="paragraph_index",
+                            match=models.MatchValue(value=paragraph_idx+1)
+                        )
+                    ],
+                    min_should=1
+                )
+                
+                # Se temos seção, filtrar pela mesma seção
+                if section:
+                    neighbor_filter.must.append(
+                        models.FieldCondition(
+                            key="section",
+                            match=models.MatchValue(value=section)
+                        )
+                    )
+                
+                neighbors = self.qdrant_client.search(
+                    collection_name=COLLECTION_NAME,
+                    query_vector=query_embedding,
+                    query_filter=neighbor_filter,
+                    limit=2
+                )
+                
+                # Adicionar vizinhos aos resultados se relevantes
+                for neighbor in neighbors:
+                    neighbor_result = SearchResult(
+                        content=neighbor.payload["content"],
+                        score=neighbor.score * 0.95,  # Ligeiramente menor relevância
+                        metadata={k: v for k, v in neighbor.payload.items() if k != "content"}
+                    )
+                    results_sorted.append(neighbor_result)
+                
+                # Reordenar após adicionar os vizinhos
+                results_sorted = sorted(results_sorted, key=lambda r: r.score, reverse=True)
+        return results_sorted
 
 # Global processor instance
 processor = DocumentProcessor()
@@ -549,16 +633,22 @@ async def upload_pdf(file: UploadFile = File(...)):
         logger.error(f"Error processing PDF {file.filename}: {e}")
         raise HTTPException(status_code=500, detail=f"Processing failed: {str(e)}")
 
+from fastapi.responses import JSONResponse
+
 @app.post("/search", response_model=List[SearchResult])
 async def search_documents(request: SearchRequest):
-    """Search for relevant document chunks"""
+    """Search for relevant document chunks, retorna também contexto concatenado para o Mistral"""
     try:
         results = await processor.search_similar_chunks(
             query=request.query,
             limit=request.limit,
             score_threshold=request.score_threshold
         )
-        return results
+        contexto_completo = "\n".join([r.content for r in results])
+        return JSONResponse(content={
+            "chunks": [r.dict() for r in results],
+            "contexto_completo": contexto_completo
+        })
     except Exception as e:
         logger.error(f"Search error: {e}")
         raise HTTPException(status_code=500, detail=f"Search failed: {str(e)}")
