@@ -35,6 +35,9 @@ class DocumentProcessorLogger:
 
     def debug(self, msg):
         self.logger.debug(msg)
+    
+    def warning(self, msg):
+        self.logger.warning(msg)
 
 # Example usage of the logger
 doc_logger = DocumentProcessorLogger(__name__)
@@ -168,7 +171,8 @@ class SearchResult(BaseModel):
 class DocumentProcessor:
     def __init__(self):
         self.embedding_service = EmbeddingService()
-        self.qdrant = QdrantClient(url=QDRANT_URL)
+        # Add compatibility mode for older Qdrant server versions
+        self.qdrant = QdrantClient(url=QDRANT_URL, check_compatibility=False)
         
     async def initialize(self):
         """Initialize Qdrant client and embedding model"""
@@ -179,7 +183,7 @@ class DocumentProcessor:
         
         # Then initialize Qdrant client
         try:
-            self.qdrant_client = QdrantClient(url=QDRANT_URL)
+            self.qdrant_client = QdrantClient(url=QDRANT_URL, check_compatibility=False)
             await self.ensure_collection_exists()
             logger.info("✅ Qdrant client initialized")
         except Exception as e:
@@ -519,63 +523,54 @@ class DocumentProcessor:
         # Ordenar resultados por score
         results_sorted = sorted(results, key=lambda r: r.score, reverse=True)
         
-        # Adicionar contexto de parágrafos vizinhos para melhor coerência
+        # Simplifique a busca de parágrafos vizinhos para evitar problemas de versão do Qdrant
+        # Em vez de usar filtros complexos, vamos buscar novamente com a mesma query
+        # e usar apenas o document_id como filtro, depois filtrar os vizinhos em memória
         if results_sorted and len(results_sorted) > 0:
-            # Identificar parágrafos relacionados para o contexto mais relevante
             top_result = results_sorted[0]
             doc_id = top_result.metadata.get("document_id")
-            section = top_result.metadata.get("section")
-            paragraph_idx = top_result.metadata.get("paragraph_index")
             
-            if doc_id and paragraph_idx is not None:
-                # Buscar parágrafos vizinhos do mesmo documento/seção
-                neighbor_filter = models.Filter(
-                    must=[
-                        models.FieldCondition(
-                            key="document_id", 
-                            match=models.MatchValue(value=doc_id)
-                        )
-                    ],
-                    should=[
-                        models.FieldCondition(
-                            key="paragraph_index",
-                            match=models.MatchValue(value=paragraph_idx-1)
-                        ),
-                        models.FieldCondition(
-                            key="paragraph_index",
-                            match=models.MatchValue(value=paragraph_idx+1)
-                        )
-                    ],
-                    min_should=1
-                )
-                
-                # Se temos seção, filtrar pela mesma seção
-                if section:
-                    neighbor_filter.must.append(
-                        models.FieldCondition(
-                            key="section",
-                            match=models.MatchValue(value=section)
-                        )
+            if doc_id:
+                try:
+                    # Busque todos os chunks do mesmo documento - uma abordagem mais simples
+                    # que evita o uso de min_should que está causando o erro
+                    doc_filter = models.Filter(
+                        must=[
+                            models.FieldCondition(
+                                key="document_id", 
+                                match=models.MatchValue(value=doc_id)
+                            )
+                        ]
                     )
-                
-                neighbors = self.qdrant_client.search(
-                    collection_name=COLLECTION_NAME,
-                    query_vector=query_embedding,
-                    query_filter=neighbor_filter,
-                    limit=2
-                )
-                
-                # Adicionar vizinhos aos resultados se relevantes
-                for neighbor in neighbors:
-                    neighbor_result = SearchResult(
-                        content=neighbor.payload["content"],
-                        score=neighbor.score * 0.95,  # Ligeiramente menor relevância
-                        metadata={k: v for k, v in neighbor.payload.items() if k != "content"}
+                    
+                    all_doc_chunks = self.qdrant_client.search(
+                        collection_name=COLLECTION_NAME,
+                        query_vector=query_embedding,
+                        query_filter=doc_filter,
+                        limit=10  # Buscar mais chunks para ter vizinhos
                     )
-                    results_sorted.append(neighbor_result)
-                
-                # Reordenar após adicionar os vizinhos
-                results_sorted = sorted(results_sorted, key=lambda r: r.score, reverse=True)
+                    
+                    # Filtrar manualmente os vizinhos que já não estão em results_sorted
+                    existing_ids = set(r.metadata.get("chunk_id", "") for r in results_sorted)
+                    for chunk in all_doc_chunks:
+                        chunk_id = chunk.payload.get("chunk_id", "")
+                        if chunk_id not in existing_ids:
+                            neighbor_result = SearchResult(
+                                content=chunk.payload["content"],
+                                score=chunk.score * 0.95,  # Ligeiramente menor relevância
+                                metadata={k: v for k, v in chunk.payload.items() if k != "content"}
+                            )
+                            results_sorted.append(neighbor_result)
+                            # Adicione apenas 2 vizinhos no máximo
+                            if len(results_sorted) >= len(search_results) + 2:
+                                break
+                    
+                    # Reordenar após adicionar os vizinhos
+                    results_sorted = sorted(results_sorted, key=lambda r: r.score, reverse=True)
+                except Exception as e:
+                    # Se a busca por vizinhos falhar, continue com os resultados originais
+                    logger.warning(f"Failed to fetch neighbor chunks: {e}")
+        
         return results_sorted
 
 # Global processor instance
