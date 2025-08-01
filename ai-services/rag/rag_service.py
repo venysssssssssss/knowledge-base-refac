@@ -101,6 +101,21 @@ class RAGService:
             rag_logger.error(f"Error searching documents: {e}")
             return []
     
+    def build_context(self, search_results: List[Dict[str, Any]]) -> str:
+        """Build context from search results"""
+        if not search_results:
+            return ""
+        
+        context_parts = []
+        for i, result in enumerate(search_results, 1):
+            content = result.get("content", "")
+            filename = result.get("metadata", {}).get("filename", "Unknown")
+            score = result.get("score", 0)
+            
+            context_parts.append(f"Documento {i} (Fonte: {filename}, Relevância: {score:.2f}):\n{content}")
+        
+        return "\n\n".join(context_parts)
+    
     async def generate_answer(self, question: str, context: str, max_tokens: int = 512, temperature: float = 0.7) -> Dict[str, Any]:
         """Generate answer using Mistral 7B"""
         try:
@@ -130,14 +145,10 @@ class RAGService:
     async def process_rag_query(self, request: RAGRequest) -> RAGResponse:
         """Process a complete RAG query, optionally filtering by document_id"""
         start_time = time.time()
-        
-        # Análise da pergunta para melhorar a busca
-        query = request.question
-        
         # Step 1: Search for relevant documents
         search_start = time.time()
         search_results = await self.search_documents(
-            query=query,
+            query=request.question,
             limit=request.search_limit,
             score_threshold=request.score_threshold,
             document_id=request.document_id
@@ -148,8 +159,8 @@ class RAGService:
         # Step 2: Build context
         context = self.build_context(search_results)
         
-        # Log do contexto para depuração
-        rag_logger.debug(f"Context built: {len(context)} characters")
+        # Log the context length for debugging
+        rag_logger.debug(f"Built context with {len(context)} characters")
         
         # Step 3: Generate answer with Mistral
         generation_start = time.time()
@@ -161,16 +172,13 @@ class RAGService:
                 temperature=request.temperature
             )
         else:
-            # Resposta sem contexto
-            rag_logger.warning("No relevant documents found")
-            return RAGResponse(
+            # Fallback: answer without context
+            rag_logger.warning("No relevant documents found, answering without context")
+            mistral_response = await self.generate_answer(
                 question=request.question,
-                answer="Não encontrei informações relevantes sobre essa pergunta nos documentos disponíveis.",
-                sources=[],
-                tokens_used=0,
-                processing_time=time.time() - start_time,
-                search_time=search_time,
-                generation_time=0
+                context="",
+                max_tokens=request.max_tokens,
+                temperature=request.temperature
             )
         generation_time = time.time() - generation_start
         total_time = time.time() - start_time
