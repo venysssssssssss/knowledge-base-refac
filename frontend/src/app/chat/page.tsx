@@ -11,6 +11,8 @@ import {
     setupConnectionListener,
     processFileForOffline
 } from './chatCache';
+import { aiClient, type RAGRequest, type RAGResponse, AIServiceError } from '@/lib/ai-client';
+import { AILoadingIndicator, BotTypingIndicator, useLoadingStates } from '@/components/ui/loading';
 
 type Message = {
     id: string;
@@ -46,6 +48,24 @@ const ALLOWED_FILE_TYPES = [
 
 const MAX_FILE_SIZE = 10 * 1024 * 1024; // 10MB
 
+// Função para gerar IDs únicos usando crypto.randomUUID() ou fallback robusto
+const generateUniqueId = () => {
+    // Usar crypto.randomUUID() se disponível (mais seguro)
+    if (typeof crypto !== 'undefined' && crypto.randomUUID) {
+        return crypto.randomUUID();
+    }
+    
+    // Fallback: timestamp + random + incremento + performance
+    const timestamp = Date.now();
+    const random = Math.random().toString(36).substr(2, 9);
+    const performance = typeof window !== 'undefined' && window.performance 
+        ? window.performance.now().toString(36).replace('.', '') 
+        : '';
+    const increment = (Date.now() % 1000000).toString(36);
+    
+    return `${timestamp}-${random}-${performance}-${increment}`;
+};
+
 export default function ChatPage() {
     const router = useRouter();
     const [messages, setMessages] = useState<Message[]>([]);
@@ -61,6 +81,28 @@ export default function ChatPage() {
 
     // Usando o hook do logger
     const { logs, addLog, addError, addWarning, addInfo, addRequest, addResponse, clearLogs } = useChatLogger();
+    
+    // Hook para estados de loading
+    const { isLoading, withLoading } = useLoadingStates();
+
+    // Função para adicionar mensagem de forma segura, evitando duplicatas
+    const addMessage = (newMessage: Message) => {
+        setMessages((prev) => {
+            // Verificar se a mensagem já existe
+            if (prev.some(msg => msg.id === newMessage.id)) {
+                console.warn(`Mensagem com ID ${newMessage.id} já existe, ignorando duplicata`);
+                return prev;
+            }
+            return [...prev, newMessage];
+        });
+    };
+
+    // Função para atualizar mensagem existente
+    const updateMessage = (messageId: string, updater: (msg: Message) => Message) => {
+        setMessages(prev => prev.map(msg => 
+            msg.id === messageId ? updater(msg) : msg
+        ));
+    };
 
     useEffect(() => {
         setIsClient(true);
@@ -140,7 +182,7 @@ export default function ChatPage() {
         if (inputValue.trim() === '') return;
 
         const userMessage: Message = {
-            id: Date.now().toString(),
+            id: generateUniqueId(),
             text: inputValue,
             sender: 'user',
             timestamp: new Date(),
@@ -156,7 +198,7 @@ export default function ChatPage() {
 
         // Salvar no cache imediatamente
         await saveMessageToCache(userMessage);
-        setMessages((prev) => [...prev, userMessage]);
+        addMessage(userMessage);
         setInputValue('');
         setIsTyping(true);
 
@@ -166,41 +208,150 @@ export default function ChatPage() {
                 await new Promise(resolve => setTimeout(resolve, 1000));
 
                 const botMessage: Message = {
-                    id: (Date.now() + 1).toString(),
+                    id: generateUniqueId(),
                     text: 'Estou offline no momento. Sua mensagem foi salva e será processada quando a conexão for restaurada.',
                     sender: 'bot',
                     timestamp: new Date(),
                 };
 
                 await saveMessageToCache(botMessage);
-                setMessages((prev) => [...prev, botMessage]);
+                addMessage(botMessage);
                 addWarning('Modo offline - mensagem salva localmente');
                 return;
             }
 
-            // Simulando processamento do bot (online)
-            await new Promise(resolve => setTimeout(resolve, 1000 + Math.random() * 2000));
+            // NOVA INTEGRAÇÃO COM IA REAL 
+            const ragRequest: RAGRequest = {
+                question: userMessage.text,
+                max_tokens: 512,
+                temperature: 0.7,
+                search_limit: 3,
+                score_threshold: 0.6
+            };
+
+            const startTime = Date.now();
+            addInfo('Enviando pergunta para IA...', { question: userMessage.text });
+
+            const aiResponse: RAGResponse = await withLoading('ai-query', async () => {
+                return await aiClient.askQuestion(ragRequest);
+            });
+            
+            const endTime = Date.now();
+
+            // Verificar se a resposta é válida antes de processar
+            if (!aiResponse || !aiResponse.answer) {
+                throw new AIServiceError('Resposta inválida recebida do serviço de IA');
+            }
 
             const botMessage: Message = {
-                id: (Date.now() + 1).toString(),
-                text: getRandomResponse(),
+                id: generateUniqueId(),
+                text: aiResponse.answer,
                 sender: 'bot',
                 timestamp: new Date(),
             };
 
-            addResponse('Resposta do bot', {
+            addResponse('Resposta da IA recebida', {
                 userMessageId: userMessage.id,
                 botMessageId: botMessage.id,
-                responseTimeMs: botMessage.timestamp.getTime() - userMessage.timestamp.getTime()
+                responseTimeMs: endTime - startTime,
+                tokensUsed: aiResponse.tokens_used || 0,
+                sourcesFound: aiResponse.sources?.length || 0,
+                processingTime: aiResponse.processing_time || 0,
+                searchTime: aiResponse.search_time || 0,
+                generationTime: aiResponse.generation_time || 0
             });
 
-            await saveMessageToCache(botMessage);
-            setMessages((prev) => [...prev, botMessage]);
+            // Salvar mensagem no cache e atualizar estado
+            try {
+                await saveMessageToCache(botMessage);
+                addMessage(botMessage);
+
+                // Log das fontes encontradas para debug (sem bloquear o fluxo principal)
+                if (aiResponse.sources && aiResponse.sources.length > 0) {
+                    addInfo('Fontes utilizadas na resposta', {
+                        sources: aiResponse.sources.map(source => ({
+                            filename: source.metadata.filename,
+                            score: source.score,
+                            contentPreview: source.content.substring(0, 100) + '...'
+                        }))
+                    });
+                }
+            } catch (cacheError) {
+                // Se falhar ao salvar no cache, ainda exibir a mensagem para o usuário
+                console.warn('Falha ao salvar no cache, mas mensagem será exibida:', cacheError);
+                addMessage(botMessage);
+                
+                addWarning('Falha ao salvar no cache', {
+                    error: cacheError instanceof Error ? cacheError.message : 'Erro desconhecido'
+                });
+            }
+
         } catch (error) {
-            addError('Falha ao processar mensagem', {
-                error: error instanceof Error ? error.message : 'Erro desconhecido',
-                inputMessage: userMessage.text
-            });
+            console.error('Erro durante processamento da mensagem:', error);
+            
+            let errorMessage = 'Erro inesperado ao processar sua mensagem';
+            let shouldDisplayError = true;
+            
+            if (error instanceof AIServiceError) {
+                addError('Erro no serviço de IA', {
+                    service: error.service,
+                    status: error.status,
+                    message: error.message,
+                    inputMessage: userMessage.text
+                });
+                
+                if (error.status === 503) {
+                    errorMessage = 'Os serviços de IA estão temporariamente indisponíveis. Tente novamente em alguns instantes.';
+                } else if (error.status === 429) {
+                    errorMessage = 'Muitas requisições. Aguarde um momento antes de tentar novamente.';
+                } else if (error.status === 401) {
+                    errorMessage = 'Sessão expirada. Faça login novamente.';
+                } else if (error.status === 404) {
+                    errorMessage = 'Serviço não encontrado. Verifique se os serviços de IA estão rodando.';
+                } else {
+                    errorMessage = `Erro no serviço de IA: ${error.message}`;
+                }
+            } else if (error instanceof Error) {
+                // Verificar se é um erro conhecido que não deve exibir mensagem de erro
+                if (error.message.includes('AbortError') || error.message.includes('cancelled')) {
+                    // Operação cancelada pelo usuário, não exibir erro
+                    shouldDisplayError = false;
+                    addInfo('Operação cancelada pelo usuário');
+                } else {
+                    addError('Falha ao processar mensagem', {
+                        error: error.message,
+                        inputMessage: userMessage.text,
+                        stack: error.stack
+                    });
+                    
+                    if (error.message.includes('NetworkError') || error.message.includes('fetch')) {
+                        errorMessage = 'Erro de conexão. Verifique sua internet e tente novamente.';
+                    }
+                }
+            } else {
+                addError('Erro desconhecido', {
+                    error: String(error),
+                    inputMessage: userMessage.text
+                });
+            }
+
+            // Só exibir mensagem de erro se necessário
+            if (shouldDisplayError) {
+                const errorBotMessage: Message = {
+                    id: generateUniqueId(),
+                    text: errorMessage,
+                    sender: 'bot',
+                    timestamp: new Date(),
+                };
+
+                try {
+                    await saveMessageToCache(errorBotMessage);
+                } catch (cacheError) {
+                    console.warn('Falha ao salvar mensagem de erro no cache:', cacheError);
+                }
+                
+                addMessage(errorBotMessage);
+            }
         } finally {
             setIsTyping(false);
         }
@@ -242,14 +393,14 @@ export default function ChatPage() {
             });
 
             const errorMessage: Message = {
-                id: Date.now().toString(),
+                id: generateUniqueId(),
                 text: `Erro: Tipo de arquivo não suportado (${fileExtension || file.type}). Formatos aceitos: PDF, DOC, DOCX, XLS, XLSX, PPT, PPTX, JPG, PNG, GIF, TXT`,
                 sender: 'bot',
                 timestamp: new Date(),
             };
 
             await saveMessageToCache(errorMessage);
-            setMessages(prev => [...prev, errorMessage]);
+            addMessage(errorMessage);
             return;
         }
 
@@ -262,14 +413,14 @@ export default function ChatPage() {
             });
 
             const errorMessage: Message = {
-                id: Date.now().toString(),
+                id: generateUniqueId(),
                 text: `Erro: O arquivo é muito grande (${formatFileSize(file.size)}). Tamanho máximo permitido: 10MB`,
                 sender: 'bot',
                 timestamp: new Date(),
             };
 
             await saveMessageToCache(errorMessage);
-            setMessages(prev => [...prev, errorMessage]);
+            addMessage(errorMessage);
             return;
         }
 
@@ -289,7 +440,7 @@ export default function ChatPage() {
         };
 
         const userMessage: Message = {
-            id: Date.now().toString(),
+            id: generateUniqueId(),
             text: '',
             sender: 'user',
             timestamp: new Date(),
@@ -299,7 +450,7 @@ export default function ChatPage() {
 
         // Salvar no cache imediatamente
         await saveMessageToCache(userMessage);
-        setMessages((prev) => [...prev, userMessage]);
+        addMessage(userMessage);
 
         const uploadInterval = setInterval(() => {
             setUploadProgress((prev) => {
@@ -318,72 +469,63 @@ export default function ChatPage() {
                 await new Promise(resolve => setTimeout(resolve, 1500));
 
                 const botMessage: Message = {
-                    id: (Date.now() + 1).toString(),
+                    id: generateUniqueId(),
                     text: 'Arquivo recebido em modo offline. Será processado quando a conexão for restaurada.',
                     sender: 'bot',
                     timestamp: new Date(),
                 };
 
                 await saveMessageToCache(botMessage);
-                setMessages(prev => prev.map(msg =>
-                    msg.id === userMessage.id
-                        ? {
-                            ...msg,
-                            isProcessing: false,
-                            text: 'Arquivo salvo localmente (modo offline)'
-                        }
-                        : msg
-                ));
-                setMessages(prev => [...prev, botMessage]);
+                updateMessage(userMessage.id, (msg) => ({
+                    ...msg,
+                    isProcessing: false,
+                    text: 'Arquivo salvo localmente (modo offline)'
+                }));
+                addMessage(botMessage);
                 addWarning('Modo offline - arquivo salvo localmente');
                 return;
             }
 
-            const formData = new FormData();
-            formData.append('file', file);
-
-            // Adicionar token de autenticação se necessário
-            const token = localStorage.getItem('token');
-            if (token) {
-                formData.append('token', token);
-            }
-
-            const response = await fetch('/api/upload', {
-                method: 'POST',
-                body: formData,
-                headers: {
-                    'Authorization': `Bearer ${token || ''}`
-                }
+            // ✨ NOVA INTEGRAÇÃO COM UPLOAD REAL ✨
+            addInfo('Enviando arquivo para processamento...', { 
+                fileName: file.name, 
+                fileSize: file.size 
             });
 
-            if (!response.ok) {
-                throw new Error(response.status === 401 ? 'Não autorizado - token inválido ou expirado' :
-                    response.status === 413 ? 'Arquivo muito grande' :
-                        'Erro no servidor');
-            }
+            const uploadResponse = await withLoading('file-upload', async () => {
+                return await aiClient.uploadDocument(file);
+            });
 
-            const data = await response.json();
-
-            if (data.success) {
+            if (uploadResponse.success) {
                 addInfo('Upload de arquivo concluído com sucesso', {
                     fileName: file.name,
                     fileSize: file.size,
                     processingTimeMs: Date.now() - userMessage.timestamp.getTime(),
-                    serverResponse: data
+                    documentId: uploadResponse.document_id,
+                    chunksCreated: uploadResponse.chunks_created
                 });
 
                 const updatedMessage: Message = {
                     ...userMessage,
                     isProcessing: false,
-                    text: data.message || 'Arquivo processado com sucesso'
+                    text: uploadResponse.message || 'Arquivo processado com sucesso'
                 };
 
                 await saveMessageToCache(updatedMessage);
-                setMessages(prev => prev.map(msg =>
-                    msg.id === userMessage.id ? updatedMessage : msg
-                ));
+                updateMessage(userMessage.id, () => updatedMessage);
+
+                // Resposta automática do bot sobre o documento processado
+                const botMessage: Message = {
+                    id: generateUniqueId(),
+                    text: `✅ Documento "${file.name}" foi processado e indexado com sucesso! ${uploadResponse.chunks_created ? `Foram criados ${uploadResponse.chunks_created} fragmentos para busca.` : ''} Agora você pode fazer perguntas sobre o conteúdo deste documento.`,
+                    sender: 'bot',
+                    timestamp: new Date(),
+                };
+
+                await saveMessageToCache(botMessage);
+                addMessage(botMessage);
             } else {
-                throw new Error(data.message || 'Erro no processamento do arquivo');
+                throw new Error(uploadResponse.message || 'Erro no processamento do arquivo');
             }
         } catch (error) {
             addError('Falha no upload de arquivo', {
@@ -393,15 +535,31 @@ export default function ChatPage() {
                 fileSize: file.size
             });
 
-            const errorMessage: Message = {
-                id: Date.now().toString(),
-                text: `Erro ao processar arquivo: ${error instanceof Error ? error.message : 'Erro desconhecido'}`,
+            let errorMessage = 'Erro ao processar arquivo';
+            
+            if (error instanceof AIServiceError) {
+                if (error.status === 413) {
+                    errorMessage = 'Arquivo muito grande. Tamanho máximo: 10MB';
+                } else if (error.status === 415) {
+                    errorMessage = 'Tipo de arquivo não suportado';
+                } else if (error.status === 503) {
+                    errorMessage = 'Serviço de processamento indisponível. Tente novamente em alguns instantes.';
+                } else {
+                    errorMessage = `Erro no upload: ${error.message}`;
+                }
+            } else if (error instanceof Error) {
+                errorMessage = `Erro ao processar arquivo: ${error.message}`;
+            }
+
+            const errorBotMessage: Message = {
+                id: generateUniqueId(),
+                text: errorMessage,
                 sender: 'bot',
                 timestamp: new Date(),
             };
 
-            await saveMessageToCache(errorMessage);
-            setMessages(prev => [...prev, errorMessage]);
+            await saveMessageToCache(errorBotMessage);
+            addMessage(errorBotMessage);
         } finally {
             setIsUploading(false);
             setUploadProgress(0);
@@ -634,14 +792,27 @@ export default function ChatPage() {
                         ))}
 
                         {isTyping && (
-                            <div className="flex justify-start">
-                                <div className="bg-gray-700/80 rounded-2xl rounded-tl-none p-4 max-w-xs shadow-md border border-gray-600/30">
-                                    <div className="flex space-x-2">
-                                        <div className="w-2 h-2 rounded-full bg-gray-400 animate-bounce"></div>
-                                        <div className="w-2 h-2 rounded-full bg-gray-400 animate-bounce" style={{ animationDelay: '0.2s' }}></div>
-                                        <div className="w-2 h-2 rounded-full bg-gray-400 animate-bounce" style={{ animationDelay: '0.4s' }}></div>
-                                    </div>
-                                </div>
+                            <div className="mb-4">
+                                <BotTypingIndicator />
+                            </div>
+                        )}
+
+                        {isLoading('ai-query') && (
+                            <div className="mb-4">
+                                <AILoadingIndicator 
+                                    type="thinking" 
+                                    message="Analisando sua pergunta..."
+                                />
+                            </div>
+                        )}
+
+                        {isLoading('file-upload') && (
+                            <div className="mb-4">
+                                <AILoadingIndicator 
+                                    type="uploading" 
+                                    message="Enviando seu documento..."
+                                    progress={uploadProgress}
+                                />
                             </div>
                         )}
                         <div ref={messagesEndRef} />
