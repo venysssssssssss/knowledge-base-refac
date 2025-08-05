@@ -286,6 +286,10 @@ RESPOSTA FINAL (baseada exclusivamente no contexto):"""
         except Exception as e:
             rag_logger.error(f"Error generating answer: {e}")
             raise HTTPException(status_code=500, detail=f"Answer generation failed: {str(e)}")
+
+    async def generate_answer(self, question: str, context: str, max_tokens: int = 500, temperature: float = 0.1) -> str:
+        """Generate answer using the enhanced method - compatibility wrapper"""
+        return await self.generate_answer_enhanced(question, context, max_tokens, temperature)
     
     async def process_rag_query(self, request: RAGRequest) -> RAGResponse:
         """Process a complete RAG query, optionally filtering by document_id"""
