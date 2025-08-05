@@ -702,6 +702,10 @@ class DocumentProcessor:
         
         return final_results
 
+    async def search_similar_chunks(self, query: str, limit: int = 10, score_threshold: float = 0.3, document_id: str = None) -> List[SearchResult]:
+        """Compatibility wrapper for search_similar_chunks_enhanced"""
+        return await self.search_similar_chunks_enhanced(query, limit, score_threshold, document_id)
+
     async def get_collection_info(self) -> Dict[str, Any]:
         """Get information about the Qdrant collection"""
         try:
