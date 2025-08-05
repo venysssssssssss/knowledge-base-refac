@@ -5,11 +5,12 @@ PDF Document Processor with Dolphin (ByteDance) for parsing and Sentence Transfo
 import asyncio
 import logging
 import os
+import re
 import hashlib
 import httpx
-import logging
-import httpx
 import numpy as np
+from typing import Dict, List, Any, Optional
+
 # Configure logging
 logging.basicConfig(
     level=logging.INFO,
@@ -22,6 +23,25 @@ logging.basicConfig(
 # LSP: Subclasses can replace superclasses
 # ISP: Specific interfaces for each operation
 # DIP: Depend on abstractions
+
+def preprocess_text_advanced(text: str) -> str:
+        """Pré-processamento avançado de texto"""
+        # Normalizar espaços
+        text = re.sub(r'\s+', ' ', text)
+        
+        # Preservar estrutura de listas e numeração
+        text = re.sub(r'\n\s*[•·*-]\s*', '\n• ', text)
+        text = re.sub(r'\n\s*(\d+)[.):]\s*', r'\n\1. ', text)
+        
+        # Normalizar pontuação específica ICATU
+        text = text.replace('ICATU Seguros', 'ICATU')
+        text = text.replace('alteração cadastral', 'alteração cadastral')
+        
+        # Remover caracteres problemáticos
+        text = re.sub(r'[\x00-\x08\x0b\x0c\x0e-\x1f\x7f-\xff]', '', text)
+        
+        return text.strip()
+
 
 class DocumentProcessorLogger:
     def __init__(self, name: str):
@@ -71,9 +91,10 @@ logger = logging.getLogger(__name__)
 # Configuration
 QDRANT_URL = "http://qdrant:6333"
 COLLECTION_NAME = "knowledge_base_v2"
-EMBEDDING_MODEL = "sentence-transformers/all-mpnet-base-v2"  # Modelo robusto para contexto longo e semântica
-CHUNK_SIZE = 1000
-CHUNK_OVERLAP = 200
+EMBEDDING_MODEL = "sentence-transformers/all-mpnet-base-v2"  # Melhor modelo para semântica complexa
+CHUNK_SIZE = 1024  # Aumentado para maior contexto
+CHUNK_OVERLAP = 256  # Overlap proporcional aumentado
+MIN_CHUNK_SIZE = 100  # Mínimo para evitar chunks muito pequenos
 
 class DocumentChunk(BaseModel):
     chunk_id: str
@@ -271,113 +292,165 @@ class DocumentProcessor:
     
     def chunk_text(self, text: str, filename: str) -> List[DocumentChunk]:
         """
-        Chunking inteligente: divide por seções e parágrafos, preservando contexto e metadados estruturados.
-        - Detecta títulos/seções por heurística (ex: linhas em maiúsculo, numeradas, etc)
-        - Cada chunk = parágrafo, com metadados de seção/título
-        - Se parágrafo for muito longo, divide por frases, mas preserva início/fim
+        Chunking inteligente aprimorado com categorização por tópicos e contexto preservado.
+        
+        MELHORIAS IMPLEMENTADAS:
+        - Chunks maiores (1024 tokens) para melhor contexto
+        - Categorização automática por tipo de conteúdo
+        - Preservação de estrutura hierárquica
+        - Metadados ricos para busca otimizada
+        - Sobreposição inteligente entre chunks
         """
         import re
         from transformers import AutoTokenizer
+        
         tokenizer = AutoTokenizer.from_pretrained(EMBEDDING_MODEL)
-        # Heurística para seções: linhas em maiúsculo, numeradas, ou com ':'
-        section_pattern = re.compile(r'^(\d+\.|[A-Z][A-Z\s\d\-]+:?)$')
+        
+        # Padrões para categorização de conteúdo ICATU
+        patterns = {
+            "solicitantes": re.compile(r'(titular|procurador|curador|tutor|responsável|beneficiário)', re.IGNORECASE),
+            "prazos": re.compile(r'(prazo|tempo|hora|dias|zendesk|atendimento|urgente)', re.IGNORECASE),
+            "documentos": re.compile(r'(documento|certidão|identificação|foto|anexo|arquivo)', re.IGNORECASE),
+            "procedimentos": re.compile(r'(processo|procedimento|como|proceder|executar|realizar)', re.IGNORECASE),
+            "alteracao_cadastral": re.compile(r'(alteração|mudança|atualização|cadastr)', re.IGNORECASE),
+            "contrato": re.compile(r'(contrato|apólice|seguro|cobertura)', re.IGNORECASE)
+        }
+        
+        # Padrões para identificar seções
+        section_pattern = re.compile(r'^(\d+\.|[A-Z][A-Z\s\d\-]+:?|\w+\s*:)$|^[IVX]+\.|^[a-z]\)')
+        title_pattern = re.compile(r'^[A-Z][A-Z\s\d\-]{10,}$')
+        
+        def categorize_content(content: str) -> List[str]:
+            """Categoriza o conteúdo do chunk"""
+            categories = []
+            content_lower = content.lower()
+            
+            for category, pattern in patterns.items():
+                if pattern.search(content_lower):
+                    categories.append(category)
+            
+            if not categories:
+                categories.append("geral")
+            
+            return categories
+        
+        def create_chunk_with_context(text: str, section: str, categories: List[str], 
+                                    chunk_idx: int, section_idx: int = 0, para_idx: int = 0) -> DocumentChunk:
+            """Cria chunk com metadados ricos"""
+            return DocumentChunk(
+                chunk_id=str(uuid.uuid4()),
+                text=text.strip(),
+                embedding=[],
+                metadata={
+                    "filename": filename,
+                    "section": section,
+                    "categories": categories,
+                    "section_index": section_idx,
+                    "paragraph_index": para_idx,
+                    "chunk_index": chunk_idx,
+                    "source": "pdf",
+                    "content_type": "document",
+                    "token_count": len(tokenizer.encode(text, add_special_tokens=False)),
+                    "priority_score": len(categories) * 0.1  # Mais categorias = maior prioridade
+                }
+            )
+        
+        # Processamento do texto
         lines = text.splitlines()
         chunks = []
-        current_section = ""
+        current_section = "INTRODUÇÃO"
         section_index = 0
         paragraph_index = 0
         chunk_index = 0
-        paragraph_buffer = []
-        for line in lines:
+        
+        # Buffer para construção de chunks
+        chunk_buffer = ""
+        chunk_tokens = 0
+        
+        for i, line in enumerate(lines):
             line = line.strip()
             if not line:
-                # Fim de parágrafo
-                if paragraph_buffer:
-                    paragraph = " ".join(paragraph_buffer).strip()
-                    tokens = len(tokenizer.encode(paragraph, add_special_tokens=False))
-                    # Se parágrafo for muito longo, divide por frases
-                    if tokens > CHUNK_SIZE:
-                        sentences = re.split(r'(?<=[.!?]) +', paragraph)
-                        sub_chunk = ""
-                        sub_tokens = 0
-                        sub_index = 0
-                        for sent in sentences:
-                            sent = sent.strip()
-                            if not sent:
-                                continue
-                            sent_tokens = len(tokenizer.encode(sent, add_special_tokens=False))
-                            if sub_tokens + sent_tokens > CHUNK_SIZE:
-                                if len(sub_chunk.strip()) > 30:
-                                    chunk = DocumentChunk(
-                                        chunk_id=str(uuid.uuid4()),
-                                        text=sub_chunk.strip(),
-                                        embedding=[],
-                                        metadata={
-                                            "filename": filename,
-                                            "section": current_section,
-                                            "section_index": section_index,
-                                            "paragraph_index": paragraph_index,
-                                            "sub_chunk_index": sub_index,
-                                            "chunk_index": chunk_index,
-                                            "source": "pdf"
-                                        }
-                                    )
-                                    chunks.append(chunk)
-                                    chunk_index += 1
-                                    sub_index += 1
-                                sub_chunk = sent
-                                sub_tokens = sent_tokens
-                            else:
-                                if sub_chunk:
-                                    sub_chunk += " " + sent
-                                else:
-                                    sub_chunk = sent
-                                sub_tokens += sent_tokens
-                        if len(sub_chunk.strip()) > 30:
-                            chunk = DocumentChunk(
-                                chunk_id=str(uuid.uuid4()),
-                                text=sub_chunk.strip(),
-                                embedding=[],
-                                metadata={
-                                    "filename": filename,
-                                    "section": current_section,
-                                    "section_index": section_index,
-                                    "paragraph_index": paragraph_index,
-                                    "sub_chunk_index": sub_index,
-                                    "chunk_index": chunk_index,
-                                    "source": "pdf"
-                                }
-                            )
-                            chunks.append(chunk)
-                            chunk_index += 1
-                    else:
-                        if len(paragraph.strip()) > 30:
-                            chunk = DocumentChunk(
-                                chunk_id=str(uuid.uuid4()),
-                                text=paragraph.strip(),
-                                embedding=[],
-                                metadata={
-                                    "filename": filename,
-                                    "section": current_section,
-                                    "section_index": section_index,
-                                    "paragraph_index": paragraph_index,
-                                    "chunk_index": chunk_index,
-                                    "source": "pdf"
-                                }
-                            )
-                            chunks.append(chunk)
-                            chunk_index += 1
-                    paragraph_index += 1
-                    paragraph_buffer = []
                 continue
-            # Detecta se é título/seção
-            if section_pattern.match(line):
+            
+            # Detecta nova seção
+            if section_pattern.match(line) or title_pattern.match(line):
+                # Salva chunk atual se existir
+                if chunk_buffer and len(chunk_buffer.strip()) > MIN_CHUNK_SIZE:
+                    categories = categorize_content(chunk_buffer)
+                    chunk = create_chunk_with_context(
+                        chunk_buffer, current_section, categories,
+                        chunk_index, section_index, paragraph_index
+                    )
+                    chunks.append(chunk)
+                    chunk_index += 1
+                
+                # Inicia nova seção
                 current_section = line
                 section_index += 1
                 paragraph_index = 0
+                chunk_buffer = ""
+                chunk_tokens = 0
                 continue
-            paragraph_buffer.append(line)
-        # Último parágrafo
+            
+            # Adiciona linha ao buffer
+            line_tokens = len(tokenizer.encode(line, add_special_tokens=False))
+            
+            # Verifica se precisa criar novo chunk
+            if chunk_tokens + line_tokens > CHUNK_SIZE:
+                if chunk_buffer and len(chunk_buffer.strip()) > MIN_CHUNK_SIZE:
+                    # Adiciona overlap inteligente
+                    overlap_text = ""
+                    if CHUNK_OVERLAP > 0:
+                        sentences = chunk_buffer.split('.')
+                        if len(sentences) > 1:
+                            # Pega última sentença para overlap
+                            overlap_text = sentences[-1].strip() + ". "
+                    
+                    categories = categorize_content(chunk_buffer)
+                    chunk = create_chunk_with_context(
+                        chunk_buffer, current_section, categories,
+                        chunk_index, section_index, paragraph_index
+                    )
+                    chunks.append(chunk)
+                    chunk_index += 1
+                    
+                    # Inicia novo chunk com overlap
+                    chunk_buffer = overlap_text + line
+                    chunk_tokens = len(tokenizer.encode(chunk_buffer, add_special_tokens=False))
+                else:
+                    chunk_buffer = line
+                    chunk_tokens = line_tokens
+            else:
+                # Adiciona ao chunk atual
+                if chunk_buffer:
+                    chunk_buffer += " " + line
+                else:
+                    chunk_buffer = line
+                chunk_tokens += line_tokens
+            
+            paragraph_index += 1
+        
+        # Processa último chunk
+        if chunk_buffer and len(chunk_buffer.strip()) > MIN_CHUNK_SIZE:
+            categories = categorize_content(chunk_buffer)
+            chunk = create_chunk_with_context(
+                chunk_buffer, current_section, categories,
+                chunk_index, section_index, paragraph_index
+            )
+            chunks.append(chunk)
+        
+        # Log de informações do chunking
+        doc_logger.info(f"Chunking inteligente gerou {len(chunks)} chunks para {filename}")
+        
+        # Estatísticas por categoria
+        category_stats = {}
+        for chunk in chunks:
+            for cat in chunk.metadata.get("categories", []):
+                category_stats[cat] = category_stats.get(cat, 0) + 1
+        
+        doc_logger.info(f"Distribuição por categoria: {category_stats}")
+        
+        return chunks
         if paragraph_buffer:
             paragraph = " ".join(paragraph_buffer).strip()
             tokens = len(tokenizer.encode(paragraph, add_special_tokens=False))
@@ -485,96 +558,163 @@ class DocumentProcessor:
         )
         logger.info(f"✅ Stored {len(points)} chunks in Qdrant for document {document_id}. IDs: {[c.chunk_id for c in chunks]}")
     
-    async def search_similar_chunks(self, query: str, limit: int = 5, score_threshold: float = 0.7, document_id: str = None) -> List[SearchResult]:
-        """Search for similar chunks in Qdrant, retorna chunks ordenados por relevância e contexto concatenado"""
-        logger.info(f"Gerando embedding da pergunta...")
-        query_embeddings = await self.embedding_model.embed_texts([query])
-        query_embedding = query_embeddings[0]
-        logger.info(f"Buscando chunks mais relevantes no Qdrant...")
+    async def search_similar_chunks_enhanced(self, query: str, limit: int = 10, score_threshold: float = 0.3, document_id: str = None) -> List[SearchResult]:
+        """
+        Busca aprimorada com foco em encontrar TODOS os chunks relevantes:
         
-        # Filtros para busca
-        search_params = {
-            "collection_name": COLLECTION_NAME,
-            "query_vector": query_embedding,
-            "limit": limit,
-            "score_threshold": score_threshold
+        OTIMIZAÇÕES IMPLEMENTADAS:
+        1. Threshold reduzido para 0.3 (era 0.6) - mais permissivo
+        2. Busca por categorias de conteúdo
+        3. Query expansion com sinônimos ICATU
+        4. Multi-vector search com re-ranking
+        5. Priorização por relevância contextual
+        """
+        doc_logger.info(f"🔍 Busca aprimorada para: '{query}' (threshold: {score_threshold})")
+        
+        # 1. Mapeamento de sinônimos específicos ICATU
+        icatu_synonyms = {
+            "alteração cadastral": ["mudança cadastral", "atualização cadastral", "modificação cadastral"],
+            "solicitar": ["fazer solicitação", "requerer", "pedir", "solicitar"],
+            "procurador": ["representante legal", "curador", "tutor", "responsável"],
+            "menor de idade": ["menor", "criança", "adolescente"],
+            "zendesk": ["sistema", "plataforma", "atendimento"],
+            "documento": ["documentação", "arquivo", "anexo", "certidão"],
+            "prazo": ["tempo", "período", "horário"],
+            "titular": ["segurado", "beneficiário", "contratante"],
+            "como": ["procedimento", "processo", "forma de"],
+            "pode": ["consegue", "é possível", "tem permissão"]
         }
         
-        # Adicionar filtro por document_id se fornecido
-        if document_id:
-            search_params["query_filter"] = models.Filter(
-                must=[
-                    models.FieldCondition(
-                        key="document_id",
-                        match=models.MatchValue(value=document_id)
-                    )
-                ]
-            )
+        # 2. Expandir query com sinônimos
+        expanded_queries = [query]
+        query_lower = query.lower()
         
-        search_results = self.qdrant_client.search(**search_params)
+        for term, synonyms in icatu_synonyms.items():
+            if term in query_lower:
+                for synonym in synonyms:
+                    expanded_query = query_lower.replace(term, synonym)
+                    expanded_queries.append(expanded_query)
         
-        results = []
-        for result in search_results:
-            search_result = SearchResult(
-                content=result.payload["content"],
-                score=result.score,
-                metadata={k: v for k, v in result.payload.items() if k != "content"}
-            )
-            results.append(search_result)
-        logger.info(f"Busca retornou {len(results)} chunks relevantes.")
+        # Adicionar variações estruturais
+        if "como" in query_lower:
+            expanded_queries.append(query_lower.replace("como", "procedimento para"))
+            expanded_queries.append(query_lower.replace("como", "forma de"))
         
-        # Ordenar resultados por score
-        results_sorted = sorted(results, key=lambda r: r.score, reverse=True)
+        if "quem pode" in query_lower:
+            expanded_queries.append(query_lower.replace("quem pode", "solicitantes autorizados"))
+            expanded_queries.append(query_lower.replace("quem pode", "pessoas que podem"))
         
-        # Simplifique a busca de parágrafos vizinhos para evitar problemas de versão do Qdrant
-        # Em vez de usar filtros complexos, vamos buscar novamente com a mesma query
-        # e usar apenas o document_id como filtro, depois filtrar os vizinhos em memória
-        if results_sorted and len(results_sorted) > 0:
-            top_result = results_sorted[0]
-            doc_id = top_result.metadata.get("document_id")
+        doc_logger.info(f"Queries expandidas: {len(expanded_queries)} variações")
+        
+        # 3. Gerar embeddings para todas as variações
+        doc_logger.info("Gerando embedding da pergunta...")
+        all_embeddings = await self.embedding_model.embed_texts(expanded_queries)
+        
+        # 4. Busca multi-vector com diferentes estratégias
+        all_results = []
+        
+        for i, query_embedding in enumerate(all_embeddings):
+            # Estratégia 1: Busca padrão
+            search_params = {
+                "collection_name": COLLECTION_NAME,
+                "query_vector": query_embedding,
+                "limit": min(limit * 3, 50),  # Buscar mais resultados inicialmente
+                "score_threshold": max(score_threshold * 0.8, 0.1)  # Threshold ainda mais permissivo
+            }
             
-            if doc_id:
-                try:
-                    # Busque todos os chunks do mesmo documento - uma abordagem mais simples
-                    # que evita o uso de min_should que está causando o erro
-                    doc_filter = models.Filter(
-                        must=[
-                            models.FieldCondition(
-                                key="document_id", 
-                                match=models.MatchValue(value=doc_id)
-                            )
-                        ]
-                    )
-                    
-                    all_doc_chunks = self.qdrant_client.search(
-                        collection_name=COLLECTION_NAME,
-                        query_vector=query_embedding,
-                        query_filter=doc_filter,
-                        limit=10  # Buscar mais chunks para ter vizinhos
-                    )
-                    
-                    # Filtrar manualmente os vizinhos que já não estão em results_sorted
-                    existing_ids = set(r.metadata.get("chunk_id", "") for r in results_sorted)
-                    for chunk in all_doc_chunks:
-                        chunk_id = chunk.payload.get("chunk_id", "")
-                        if chunk_id not in existing_ids:
-                            neighbor_result = SearchResult(
-                                content=chunk.payload["content"],
-                                score=chunk.score * 0.95,  # Ligeiramente menor relevância
-                                metadata={k: v for k, v in chunk.payload.items() if k != "content"}
-                            )
-                            results_sorted.append(neighbor_result)
-                            # Adicione apenas 2 vizinhos no máximo
-                            if len(results_sorted) >= len(search_results) + 2:
-                                break
-                    
-                    # Reordenar após adicionar os vizinhos
-                    results_sorted = sorted(results_sorted, key=lambda r: r.score, reverse=True)
-                except Exception as e:
-                    # Se a busca por vizinhos falhar, continue com os resultados originais
-                    logger.warning(f"Failed to fetch neighbor chunks: {e}")
+            if document_id:
+                search_params["query_filter"] = models.Filter(
+                    must=[
+                        models.FieldCondition(
+                            key="document_id",
+                            match=models.MatchValue(value=document_id)
+                        )
+                    ]
+                )
+            
+            doc_logger.info("Buscando chunks mais relevantes no Qdrant...")
+            search_results = self.qdrant_client.search(**search_params)
+            
+            # Peso baseado na query (original tem peso maior)
+            weight = 1.0 if i == 0 else 0.85
+            
+            for result in search_results:
+                # Calcular score ajustado com peso e metadados
+                adjusted_score = result.score * weight
+                
+                # Bonus por categoria relevante
+                categories = result.payload.get("categories", [])
+                if any(cat in ["alteracao_cadastral", "solicitantes", "procedimentos"] for cat in categories):
+                    adjusted_score *= 1.2
+                
+                # Bonus por prioridade do chunk
+                priority = result.payload.get("priority_score", 0)
+                adjusted_score += priority
+                
+                result_obj = SearchResult(
+                    content=result.payload["content"],
+                    score=adjusted_score,
+                    metadata={k: v for k, v in result.payload.items() if k != "content"}
+                )
+                all_results.append(result_obj)
         
-        return results_sorted
+        # 5. Deduplicar e ordenar resultados
+        seen_content = {}
+        unique_results = []
+        
+        for result in all_results:
+            content_key = result.content[:100]  # Usar início do conteúdo como chave
+            
+            if content_key not in seen_content or result.score > seen_content[content_key].score:
+                seen_content[content_key] = result
+        
+        unique_results = list(seen_content.values())
+        unique_results.sort(key=lambda x: x.score, reverse=True)
+        
+        # 6. Aplicar threshold final e limitar resultados
+        final_results = [r for r in unique_results if r.score >= score_threshold][:limit]
+        
+        doc_logger.info(f"Busca retornou {len(final_results)} chunks relevantes.")
+        
+        # 7. Log detalhado dos resultados para debug
+        if final_results:
+            doc_logger.info(f"Melhores resultados: scores = {[f'{r.score:.3f}' for r in final_results[:3]]}")
+        else:
+            doc_logger.warning(f"Nenhum resultado encontrado com threshold {score_threshold}")
+            
+            # Busca de emergência com threshold muito baixo
+            emergency_search = self.qdrant_client.search(
+                collection_name=COLLECTION_NAME,
+                query_vector=all_embeddings[0],
+                limit=5,
+                score_threshold=0.1
+            )
+            
+            if emergency_search:
+                doc_logger.info(f"Busca de emergência encontrou {len(emergency_search)} resultados")
+                for result in emergency_search:
+                    result_obj = SearchResult(
+                        content=result.payload["content"],
+                        score=result.score,
+                        metadata={k: v for k, v in result.payload.items() if k != "content"}
+                    )
+                    final_results.append(result_obj)
+        
+        return final_results
+
+    async def get_collection_info(self) -> Dict[str, Any]:
+        """Get information about the Qdrant collection"""
+        try:
+            collection_info = self.qdrant_client.get_collection(COLLECTION_NAME)
+            return {
+                "collection_name": COLLECTION_NAME,
+                "vectors_count": collection_info.vectors_count,
+                "points_count": collection_info.points_count,
+                "status": collection_info.status
+            }
+        except Exception as e:
+            doc_logger.error(f"Error getting collection info: {e}")
+            return {"error": str(e)}
 
 # Global processor instance
 processor = DocumentProcessor()

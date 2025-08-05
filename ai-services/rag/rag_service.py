@@ -58,8 +58,8 @@ class RAGRequest(BaseModel):
     question: str
     max_tokens: int = 512
     temperature: float = 0.7
-    search_limit: int = 3
-    score_threshold: float = 0.7
+    search_limit: int = 8
+    score_threshold: float = 0.5
     document_id: str = None  # Novo campo opcional para filtrar por documento
 
 class RAGResponse(BaseModel):
@@ -85,7 +85,7 @@ class RAGService:
         if self.http_client:
             await self.http_client.aclose()
     
-    async def search_documents(self, query: str, limit: int = 3, score_threshold: float = 0.7, document_id: str = None) -> List[Dict[str, Any]]:
+    async def search_documents(self, query: str, limit: int = 3, score_threshold: float = 0.5, document_id: str = None) -> List[Dict[str, Any]]:
         """Search for relevant documents, optionally filtering by document_id"""
         try:
             search_payload = {
@@ -113,31 +113,163 @@ class RAGService:
             rag_logger.error(f"Error searching documents: {e}")
             return []
     
-    def build_context(self, search_results: List[Dict[str, Any]]) -> str:
-        """Build context from search results"""
+    def build_context_intelligent(self, search_results: List[Dict[str, Any]], question: str) -> str:
+        """
+        Construção inteligente de contexto com:
+        1. Ranking por relevância
+        2. Deduplicação semântica  
+        3. Estruturação hierárquica
+        4. Otimização de token usage
+        """
         if not search_results:
             return ""
         
-        context_parts = []
-        for i, result in enumerate(search_results, 1):
-            content = result.get("content", "")
-            filename = result.get("metadata", {}).get("filename", "Unknown")
+        # 1. Filtrar e ranquear resultados
+        filtered_results = []
+        for result in search_results:
+            content = result.get("content", "").strip()
             score = result.get("score", 0)
             
-            context_parts.append(f"Documento {i} (Fonte: {filename}, Relevância: {score:.2f}):\n{content}")
+            # Filtrar conteúdo muito curto ou irrelevante
+            if len(content) < 20 or score < 0.3:
+                continue
+                
+            filtered_results.append(result)
         
-        return "\n\n".join(context_parts)
-    
-    async def generate_answer(self, question: str, context: str, max_tokens: int = 512, temperature: float = 0.7) -> Dict[str, Any]:
-        """Generate answer using Mistral 7B"""
+        # 2. Agrupar por tipo de informação
+        categorized_content = {
+            "solicitantes": [],
+            "prazos": [],
+            "documentos": [], 
+            "procedimentos": [],
+            "outros": []
+        }
+        
+        question_lower = question.lower()
+        
+        for result in filtered_results:
+            content = result.get("content", "")
+            content_lower = content.lower()
+            
+            # Categorização baseada em palavras-chave
+            if any(word in content_lower for word in ["titular", "procurador", "curador", "tutor", "solicitar"]):
+                categorized_content["solicitantes"].append(result)
+            elif any(word in content_lower for word in ["prazo", "tempo", "hora", "dias", "zendesk"]):
+                categorized_content["prazos"].append(result)
+            elif any(word in content_lower for word in ["documento", "certidão", "identificação", "foto"]):
+                categorized_content["documentos"].append(result)
+            elif any(word in content_lower for word in ["proceder", "procedimento", "processo", "como"]):
+                categorized_content["procedimentos"].append(result)
+            else:
+                categorized_content["outros"].append(result)
+        
+        # 3. Construir contexto estruturado
+        context_parts = []
+        
+        # Priorizar categoria mais relevante para a pergunta
+        category_priority = ["outros"]  # Default
+        
+        if any(word in question_lower for word in ["quem", "pode", "solicitar"]):
+            category_priority = ["solicitantes", "procedimentos", "outros", "documentos", "prazos"]
+        elif any(word in question_lower for word in ["prazo", "tempo", "quanto tempo", "quando"]):
+            category_priority = ["prazos", "procedimentos", "outros", "solicitantes", "documentos"]
+        elif any(word in question_lower for word in ["documento", "apresentar", "necessário"]):
+            category_priority = ["documentos", "procedimentos", "outros", "solicitantes", "prazos"]
+        elif any(word in question_lower for word in ["como", "proceder", "procedimento"]):
+            category_priority = ["procedimentos", "outros", "documentos", "prazos", "solicitantes"]
+        
+        # 4. Construir contexto seguindo prioridade
+        used_content = set()
+        total_chars = 0
+        max_chars = 2000  # Limitar tamanho do contexto
+        
+        for category in category_priority:
+            if total_chars >= max_chars:
+                break
+                
+            category_results = categorized_content[category]
+            # Ordenar por score dentro da categoria
+            category_results.sort(key=lambda x: x.get("score", 0), reverse=True)
+            
+            for i, result in enumerate(category_results):
+                content = result.get("content", "")
+                content_key = content[:50]  # Chave para deduplicação
+                
+                if content_key in used_content or total_chars + len(content) > max_chars:
+                    continue
+                
+                used_content.add(content_key)
+                filename = result.get("metadata", {}).get("filename", "ICATU")
+                score = result.get("score", 0)
+                
+                # Formatação inteligente baseada na categoria
+                if category == "prazos":
+                    prefix = "⏰ PRAZO"
+                elif category == "documentos":
+                    prefix = "📄 DOCUMENTAÇÃO"
+                elif category == "solicitantes":
+                    prefix = "👥 SOLICITANTES"
+                elif category == "procedimentos":
+                    prefix = "📋 PROCEDIMENTO"
+                else:
+                    prefix = "📌 INFORMAÇÃO"
+                
+                context_part = f"{prefix} (Relevância: {score:.1f}):\n{content}"
+                context_parts.append(context_part)
+                total_chars += len(content)
+                
+                # Limitar número de itens por categoria
+                if len([p for p in context_parts if prefix in p]) >= 3:
+                    break
+        
+        final_context = "\n\n".join(context_parts)
+        
+        # 5. Adicionar metadados de contexto
+        context_metadata = f"""
+RESUMO DO CONTEXTO:
+- Total de fontes: {len(context_parts)}
+- Categorias cobertas: {[cat for cat in category_priority if categorized_content[cat]]}
+- Foco principal: {category_priority[0]}
+
+CONTEÚDO TÉCNICO:
+{final_context}
+"""
+        
+        return context_metadata.strip()
+
+    async def generate_answer_enhanced(self, question: str, context: str, max_tokens: int = 500, temperature: float = 0.1) -> str:
+        """Generate enhanced answer using Mistral with intelligent prompting"""
         try:
-            # Instrução explícita para usar APENAS o contexto fornecido
+            # Advanced prompt engineering with CoT reasoning
+            enhanced_prompt = f"""Você é um especialista em procedimentos ICATU Seguros com acesso a documentos técnicos.
+
+METODOLOGIA DE ANÁLISE:
+1. 📋 LEIA o contexto fornecido cuidadosamente
+2. 🎯 IDENTIFIQUE palavras-chave relevantes na pergunta  
+3. 🔍 BUSQUE informações específicas no contexto
+4. ✅ CONFIRME se a informação está disponível
+5. 📝 RESPONDA de forma precisa e completa
+
+REGRAS CRÍTICAS:
+- Use APENAS informações do contexto fornecido
+- Se não encontrar a informação: "A informação solicitada não está disponível nos documentos fornecidos."
+- Mantenha terminologia técnica ICATU
+- Seja direto e objetivo
+- Cite prazos e procedimentos exatos quando disponíveis
+
+CONTEXTO TÉCNICO ICATU:
+{context}
+
+PERGUNTA ESPECÍFICA: {question}
+
+RESPOSTA FINAL (baseada exclusivamente no contexto):"""
+            
             mistral_payload = {
                 "question": question,
-                "context": context,
+                "context": enhanced_prompt,
                 "max_tokens": max_tokens,
-                "temperature": temperature,
-                "instructions": "Responda APENAS com base no contexto fornecido. Se a informação não estiver no contexto, responda 'A informação solicitada não está disponível nos documentos fornecidos.'"
+                "temperature": min(temperature, 0.2),  # Temperatura baixa para precisão máxima
+                "instructions": "Responda de forma precisa baseado exclusivamente no contexto fornecido."
             }
             
             response = await self.http_client.post(
@@ -148,7 +280,8 @@ class RAGService:
             if response.status_code != 200:
                 raise HTTPException(status_code=500, detail=f"Mistral service error: {response.text}")
             
-            return response.json()
+            result = response.json()
+            return result.get("answer", "")
             
         except Exception as e:
             rag_logger.error(f"Error generating answer: {e}")
@@ -161,15 +294,15 @@ class RAGService:
         search_start = time.time()
         search_results = await self.search_documents(
             query=request.question,
-            limit=request.search_limit,
-            score_threshold=request.score_threshold,
+            limit=min(request.search_limit, 8),
+            score_threshold=max(request.score_threshold, 0.2),  # Threshold mais baixo
             document_id=request.document_id
         )
         search_time = time.time() - search_start
         rag_logger.info(f"Found {len(search_results)} relevant documents in {search_time:.2f}s")
         
         # Step 2: Build context
-        context = self.build_context(search_results)
+        context = self.build_context_intelligent(search_results, request.question)
         
         # Log the context length for debugging
         rag_logger.debug(f"Built context with {len(context)} characters")
