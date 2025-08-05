@@ -1,0 +1,47 @@
+services:
+
+  mistral-service:
+    build: 
+      context: ./ai-services/inference
+      dockerfile: Dockerfile
+    container_name: mistral-service
+    ports:
+      - "8003:8003"
+    volumes:
+      - ./ai-services/inference:/app   # Bind mount do código local para dentro do container
+    environment:
+      - OLLAMA_BASE_URL=http://172.17.0.1:11434  # Docker host IP
+    networks:
+      - knowledge-base
+
+  document-processor:
+    build: 
+      context: ./ai-services/document-processor
+      dockerfile: Dockerfile
+    container_name: document-processor
+    ports:
+      - "8001:8001"
+    volumes:
+      - ./ai-services/document-processor:/app
+      - ./data/uploads:/app/uploads   # Se você usar uploads, mantêm os dados persistidos
+    networks:
+      - knowledge-base
+
+  rag-service:
+    build: 
+      context: ./ai-services/rag
+      dockerfile: Dockerfile
+    container_name: rag-service
+    ports:
+      - "8002:8002"
+    volumes:
+      - ./ai-services/rag:/app
+    depends_on:
+      - mistral-service
+      - document-processor
+    networks:
+      - knowledge-base
+
+networks:
+  knowledge-base:
+    driver: bridge
