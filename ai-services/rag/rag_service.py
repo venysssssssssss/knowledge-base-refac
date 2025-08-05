@@ -237,7 +237,7 @@ CONTEÚDO TÉCNICO:
         
         return context_metadata.strip()
 
-    async def generate_answer_enhanced(self, question: str, context: str, max_tokens: int = 500, temperature: float = 0.1) -> str:
+    async def generate_answer_enhanced(self, question: str, context: str, max_tokens: int = 500, temperature: float = 0.1) -> dict:
         """Generate enhanced answer using Mistral with intelligent prompting"""
         try:
             # Advanced prompt engineering with CoT reasoning
@@ -281,15 +281,29 @@ RESPOSTA FINAL (baseada exclusivamente no contexto):"""
                 raise HTTPException(status_code=500, detail=f"Mistral service error: {response.text}")
             
             result = response.json()
-            return result.get("answer", "")
+            rag_logger.debug(f"Mistral response type: {type(result)}, content: {result}")
+            
+            # Return the full response object for compatibility
+            return result
             
         except Exception as e:
             rag_logger.error(f"Error generating answer: {e}")
             raise HTTPException(status_code=500, detail=f"Answer generation failed: {str(e)}")
 
-    async def generate_answer(self, question: str, context: str, max_tokens: int = 500, temperature: float = 0.1) -> str:
+    async def generate_answer(self, question: str, context: str, max_tokens: int = 500, temperature: float = 0.1) -> dict:
         """Generate answer using the enhanced method - compatibility wrapper"""
-        return await self.generate_answer_enhanced(question, context, max_tokens, temperature)
+        response = await self.generate_answer_enhanced(question, context, max_tokens, temperature)
+        
+        # If response is a dict (expected), return it directly
+        if isinstance(response, dict):
+            return response
+        
+        # If response is a string, wrap it in the expected format
+        return {
+            "answer": str(response),
+            "tokens_used": len(str(response).split()) if response else 0,
+            "processing_time": 0.0
+        }
     
     async def process_rag_query(self, request: RAGRequest) -> RAGResponse:
         """Process a complete RAG query, optionally filtering by document_id"""

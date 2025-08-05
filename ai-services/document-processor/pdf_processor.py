@@ -793,7 +793,7 @@ from fastapi.responses import JSONResponse
 async def search_documents(request: SearchRequest):
     """Search for relevant document chunks, retorna também contexto concatenado para o Mistral"""
     try:
-        results = await processor.search_similar_chunks(
+        results = await processor.search_similar_chunks_enhanced(
             query=request.query,
             limit=request.limit,
             score_threshold=request.score_threshold
