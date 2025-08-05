@@ -244,11 +244,11 @@ CONTEÚDO TÉCNICO:
             enhanced_prompt = f"""Você é um especialista em procedimentos ICATU Seguros com acesso a documentos técnicos.
 
 METODOLOGIA DE ANÁLISE:
-1. 📋 LEIA o contexto fornecido cuidadosamente
-2. 🎯 IDENTIFIQUE palavras-chave relevantes na pergunta  
-3. 🔍 BUSQUE informações específicas no contexto
-4. ✅ CONFIRME se a informação está disponível
-5. 📝 RESPONDA de forma precisa e completa
+1. LEIA o contexto fornecido cuidadosamente
+2. IDENTIFIQUE palavras-chave relevantes na pergunta  
+3. BUSQUE informações específicas no contexto
+4. CONFIRME se a informação está disponível
+5. RESPONDA de forma precisa e completa
 
 REGRAS CRÍTICAS:
 - Use APENAS informações do contexto fornecido
