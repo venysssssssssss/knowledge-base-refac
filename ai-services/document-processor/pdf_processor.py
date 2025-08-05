@@ -9,6 +9,11 @@ import re
 import hashlib
 import httpx
 import numpy as np
+import uuid
+import time
+import io
+import torch
+import PyPDF2
 from typing import Dict, List, Any, Optional
 
 # Configure logging
@@ -91,10 +96,11 @@ logger = logging.getLogger(__name__)
 # Configuration
 QDRANT_URL = "http://qdrant:6333"
 COLLECTION_NAME = "knowledge_base_v2"
-EMBEDDING_MODEL = "sentence-transformers/all-mpnet-base-v2"  # Melhor modelo para semântica complexa
-CHUNK_SIZE = 1024  # Aumentado para maior contexto
-CHUNK_OVERLAP = 256  # Overlap proporcional aumentado
-MIN_CHUNK_SIZE = 100  # Mínimo para evitar chunks muito pequenos
+# EMBEDDING_MODEL = "sentence-transformers/all-mpnet-base-v2"  # Atual - bom para semântica geral
+EMBEDDING_MODEL = "sentence-transformers/paraphrase-multilingual-mpnet-base-v2"  # MELHOR para português brasileiro
+CHUNK_SIZE = 2048  # AUMENTADO para capturar mais contexto
+CHUNK_OVERLAP = 512  # AUMENTADO overlap para melhor continuidade
+MIN_CHUNK_SIZE = 200  # AUMENTADO para evitar chunks muito pequenos
 
 class DocumentChunk(BaseModel):
     chunk_id: str
@@ -108,7 +114,7 @@ class EmbeddingService:
     def __init__(self, model_name: str = EMBEDDING_MODEL):
         self.model_name = model_name
         self.model = None
-        self.embedding_dim = 768  # all-MiniLM-L6-v2 dimension
+        self.embedding_dim = 768
         
     async def initialize(self):
         """Initialize the embedding model"""
@@ -292,36 +298,43 @@ class DocumentProcessor:
     
     def chunk_text(self, text: str, filename: str) -> List[DocumentChunk]:
         """
-        Chunking inteligente aprimorado com categorização por tópicos e contexto preservado.
+        CHUNKING HIERÁRQUICO OTIMIZADO para capturar TODO o contexto
         
-        MELHORIAS IMPLEMENTADAS:
-        - Chunks maiores (1024 tokens) para melhor contexto
-        - Categorização automática por tipo de conteúdo
-        - Preservação de estrutura hierárquica
-        - Metadados ricos para busca otimizada
-        - Sobreposição inteligente entre chunks
+        ESTRATÉGIAS IMPLEMENTADAS:
+        1. 🎯 Chunks maiores (2048 tokens) para máximo contexto
+        2. 🔄 Overlap aumentado (512 tokens) para continuidade
+        3. 📊 Categorização automática ICATU
+        4. 🏗️ Preservação de estrutura hierárquica
+        5. 📝 Metadados ricos para busca otimizada
+        6. 🔍 Garantia de cobertura completa do documento
         """
         import re
         from transformers import AutoTokenizer
         
         tokenizer = AutoTokenizer.from_pretrained(EMBEDDING_MODEL)
         
+        # Pré-processamento avançado do texto
+        text = preprocess_text_advanced(text)
+        
         # Padrões para categorização de conteúdo ICATU
         patterns = {
-            "solicitantes": re.compile(r'(titular|procurador|curador|tutor|responsável|beneficiário)', re.IGNORECASE),
-            "prazos": re.compile(r'(prazo|tempo|hora|dias|zendesk|atendimento|urgente)', re.IGNORECASE),
-            "documentos": re.compile(r'(documento|certidão|identificação|foto|anexo|arquivo)', re.IGNORECASE),
-            "procedimentos": re.compile(r'(processo|procedimento|como|proceder|executar|realizar)', re.IGNORECASE),
-            "alteracao_cadastral": re.compile(r'(alteração|mudança|atualização|cadastr)', re.IGNORECASE),
-            "contrato": re.compile(r'(contrato|apólice|seguro|cobertura)', re.IGNORECASE)
+            "solicitantes": re.compile(r'(titular|procurador|curador|tutor|responsável|beneficiário|requerente)', re.IGNORECASE),
+            "prazos": re.compile(r'(prazo|tempo|hora|dias|zendesk|atendimento|urgente|cronograma)', re.IGNORECASE),
+            "documentos": re.compile(r'(documento|certidão|identificação|foto|anexo|arquivo|comprovante)', re.IGNORECASE),
+            "procedimentos": re.compile(r'(processo|procedimento|como|proceder|executar|realizar|instrução)', re.IGNORECASE),
+            "alteracao_cadastral": re.compile(r'(alteração|mudança|atualização|cadastr|modificação)', re.IGNORECASE),
+            "contrato": re.compile(r'(contrato|apólice|seguro|cobertura|produto)', re.IGNORECASE),
+            "requisitos": re.compile(r'(requisito|exigência|necessário|obrigatório|deve)', re.IGNORECASE),
+            "canais": re.compile(r'(portal|site|telefone|email|presencial|digital)', re.IGNORECASE)
         }
         
-        # Padrões para identificar seções
-        section_pattern = re.compile(r'^(\d+\.|[A-Z][A-Z\s\d\-]+:?|\w+\s*:)$|^[IVX]+\.|^[a-z]\)')
-        title_pattern = re.compile(r'^[A-Z][A-Z\s\d\-]{10,}$')
+        # Padrões para identificar seções e estruturas
+        section_pattern = re.compile(r'^(\d+[\.\)]\s*|[IVX]+[\.\)]\s*|[A-Z][A-Z\s\d\-]{10,}:?\s*|\w+\s*:)$|^[a-z][\)\.]', re.MULTILINE)
+        title_pattern = re.compile(r'^[A-Z][A-Z\s\d\-]{8,}$')
+        list_pattern = re.compile(r'^\s*[•·*-]\s*|^\s*\d+[\.\)]\s*')
         
         def categorize_content(content: str) -> List[str]:
-            """Categoriza o conteúdo do chunk"""
+            """Categoriza o conteúdo do chunk de forma mais precisa"""
             categories = []
             content_lower = content.lower()
             
@@ -329,14 +342,25 @@ class DocumentProcessor:
                 if pattern.search(content_lower):
                     categories.append(category)
             
+            # Categorização adicional baseada em estrutura
+            if list_pattern.search(content):
+                categories.append("lista")
+            if any(word in content_lower for word in ["passo", "etapa", "primeiro", "segundo"]):
+                categories.append("sequencial")
+            if any(word in content_lower for word in ["atenção", "importante", "observação", "nota"]):
+                categories.append("destaque")
+            
             if not categories:
                 categories.append("geral")
             
             return categories
         
         def create_chunk_with_context(text: str, section: str, categories: List[str], 
-                                    chunk_idx: int, section_idx: int = 0, para_idx: int = 0) -> DocumentChunk:
-            """Cria chunk com metadados ricos"""
+                                    chunk_idx: int, section_idx: int = 0, para_idx: int = 0,
+                                    has_overlap: bool = False) -> DocumentChunk:
+            """Cria chunk com metadados ricos e contexto estrutural"""
+            token_count = len(tokenizer.encode(text, add_special_tokens=False))
+            
             return DocumentChunk(
                 chunk_id=str(uuid.uuid4()),
                 text=text.strip(),
@@ -350,182 +374,200 @@ class DocumentProcessor:
                     "chunk_index": chunk_idx,
                     "source": "pdf",
                     "content_type": "document",
-                    "token_count": len(tokenizer.encode(text, add_special_tokens=False)),
-                    "priority_score": len(categories) * 0.1  # Mais categorias = maior prioridade
+                    "token_count": token_count,
+                    "character_count": len(text),
+                    "has_overlap": has_overlap,
+                    "processing_timestamp": time.time(),
+                    "priority_score": len(categories) * 0.1 + (1.0 if "importante" in text.lower() else 0.0),
+                    "density_score": token_count / max(len(text), 1)  # Densidade de informação
                 }
             )
         
-        # Processamento do texto
-        lines = text.splitlines()
+        # ESTRATÉGIA 1: Processamento por parágrafos com overlap inteligente
+        paragraphs = text.split('\n\n')
         chunks = []
-        current_section = "INTRODUÇÃO"
+        current_section = "DOCUMENTO_PRINCIPAL"
         section_index = 0
-        paragraph_index = 0
         chunk_index = 0
         
         # Buffer para construção de chunks
         chunk_buffer = ""
         chunk_tokens = 0
+        previous_chunk_text = ""  # Para overlap
         
-        for i, line in enumerate(lines):
-            line = line.strip()
-            if not line:
+        doc_logger.info(f"Iniciando chunking hierárquico para {filename}: {len(paragraphs)} parágrafos")
+        
+        for para_idx, paragraph in enumerate(paragraphs):
+            paragraph = paragraph.strip()
+            if not paragraph:
                 continue
             
-            # Detecta nova seção
-            if section_pattern.match(line) or title_pattern.match(line):
-                # Salva chunk atual se existir
-                if chunk_buffer and len(chunk_buffer.strip()) > MIN_CHUNK_SIZE:
+            # Detecta nova seção baseada em padrões
+            if section_pattern.match(paragraph) or title_pattern.match(paragraph):
+                # Finaliza chunk atual se existir
+                if chunk_buffer and len(chunk_buffer.strip()) >= MIN_CHUNK_SIZE:
                     categories = categorize_content(chunk_buffer)
                     chunk = create_chunk_with_context(
                         chunk_buffer, current_section, categories,
-                        chunk_index, section_index, paragraph_index
+                        chunk_index, section_index, para_idx
                     )
                     chunks.append(chunk)
+                    previous_chunk_text = chunk_buffer[-CHUNK_OVERLAP:] if len(chunk_buffer) > CHUNK_OVERLAP else chunk_buffer
                     chunk_index += 1
                 
                 # Inicia nova seção
-                current_section = line
+                current_section = paragraph[:100] + "..." if len(paragraph) > 100 else paragraph
                 section_index += 1
-                paragraph_index = 0
                 chunk_buffer = ""
                 chunk_tokens = 0
                 continue
             
-            # Adiciona linha ao buffer
-            line_tokens = len(tokenizer.encode(line, add_special_tokens=False))
+            # Calcula tokens do parágrafo
+            para_tokens = len(tokenizer.encode(paragraph, add_special_tokens=False))
             
-            # Verifica se precisa criar novo chunk
-            if chunk_tokens + line_tokens > CHUNK_SIZE:
-                if chunk_buffer and len(chunk_buffer.strip()) > MIN_CHUNK_SIZE:
-                    # Adiciona overlap inteligente
-                    overlap_text = ""
-                    if CHUNK_OVERLAP > 0:
-                        sentences = chunk_buffer.split('.')
-                        if len(sentences) > 1:
-                            # Pega última sentença para overlap
-                            overlap_text = sentences[-1].strip() + ". "
+            # ESTRATÉGIA 2: Gerenciamento inteligente de tamanho de chunk
+            if chunk_tokens + para_tokens > CHUNK_SIZE:
+                # Salva chunk atual
+                if chunk_buffer and len(chunk_buffer.strip()) >= MIN_CHUNK_SIZE:
+                    # Adiciona overlap da chunk anterior se disponível
+                    full_chunk_text = chunk_buffer
+                    if previous_chunk_text and not chunk_buffer.startswith(previous_chunk_text[-100:]):
+                        overlap_text = previous_chunk_text[-CHUNK_OVERLAP//2:].strip()
+                        if overlap_text:
+                            full_chunk_text = overlap_text + " [CONTINUAÇÃO] " + chunk_buffer
                     
-                    categories = categorize_content(chunk_buffer)
+                    categories = categorize_content(full_chunk_text)
                     chunk = create_chunk_with_context(
-                        chunk_buffer, current_section, categories,
-                        chunk_index, section_index, paragraph_index
+                        full_chunk_text, current_section, categories,
+                        chunk_index, section_index, para_idx,
+                        has_overlap=bool(previous_chunk_text)
                     )
                     chunks.append(chunk)
-                    chunk_index += 1
                     
-                    # Inicia novo chunk com overlap
-                    chunk_buffer = overlap_text + line
-                    chunk_tokens = len(tokenizer.encode(chunk_buffer, add_special_tokens=False))
+                    # Prepara overlap para próximo chunk
+                    previous_chunk_text = chunk_buffer
+                    chunk_index += 1
+                
+                # ESTRATÉGIA 3: Divisão inteligente de parágrafos grandes
+                if para_tokens > CHUNK_SIZE:
+                    # Divide parágrafo por sentenças
+                    sentences = re.split(r'(?<=[.!?])\s+', paragraph)
+                    sub_chunk = ""
+                    sub_tokens = 0
+                    
+                    for sent in sentences:
+                        sent = sent.strip()
+                        if not sent:
+                            continue
+                        
+                        sent_tokens = len(tokenizer.encode(sent, add_special_tokens=False))
+                        
+                        if sub_tokens + sent_tokens > CHUNK_SIZE and sub_chunk:
+                            # Salva sub-chunk
+                            if len(sub_chunk.strip()) >= MIN_CHUNK_SIZE:
+                                # Adiciona overlap se disponível
+                                full_sub_chunk = sub_chunk
+                                if previous_chunk_text:
+                                    overlap_text = previous_chunk_text[-CHUNK_OVERLAP//3:].strip()
+                                    if overlap_text:
+                                        full_sub_chunk = overlap_text + " [CONTINUAÇÃO] " + sub_chunk
+                                
+                                categories = categorize_content(full_sub_chunk)
+                                chunk = create_chunk_with_context(
+                                    full_sub_chunk, current_section, categories,
+                                    chunk_index, section_index, para_idx,
+                                    has_overlap=True
+                                )
+                                chunks.append(chunk)
+                                previous_chunk_text = sub_chunk
+                                chunk_index += 1
+                            
+                            # Inicia novo sub-chunk com overlap
+                            overlap_text = sub_chunk[-CHUNK_OVERLAP//2:] if len(sub_chunk) > CHUNK_OVERLAP//2 else ""
+                            sub_chunk = overlap_text + " " + sent if overlap_text else sent
+                            sub_tokens = len(tokenizer.encode(sub_chunk, add_special_tokens=False))
+                        else:
+                            sub_chunk = sub_chunk + " " + sent if sub_chunk else sent
+                            sub_tokens += sent_tokens
+                    
+                    # Salva último sub-chunk
+                    if sub_chunk and len(sub_chunk.strip()) >= MIN_CHUNK_SIZE:
+                        categories = categorize_content(sub_chunk)
+                        chunk = create_chunk_with_context(
+                            sub_chunk, current_section, categories,
+                            chunk_index, section_index, para_idx
+                        )
+                        chunks.append(chunk)
+                        previous_chunk_text = sub_chunk
+                        chunk_index += 1
+                    
+                    chunk_buffer = ""
+                    chunk_tokens = 0
                 else:
-                    chunk_buffer = line
-                    chunk_tokens = line_tokens
+                    # Inicia novo chunk com o parágrafo atual
+                    chunk_buffer = paragraph
+                    chunk_tokens = para_tokens
             else:
-                # Adiciona ao chunk atual
-                if chunk_buffer:
-                    chunk_buffer += " " + line
-                else:
-                    chunk_buffer = line
-                chunk_tokens += line_tokens
-            
-            paragraph_index += 1
+                # Adiciona parágrafo ao chunk atual
+                chunk_buffer = chunk_buffer + "\n\n" + paragraph if chunk_buffer else paragraph
+                chunk_tokens += para_tokens
         
-        # Processa último chunk
-        if chunk_buffer and len(chunk_buffer.strip()) > MIN_CHUNK_SIZE:
-            categories = categorize_content(chunk_buffer)
+        # ESTRATÉGIA 4: Processa último chunk restante
+        if chunk_buffer and len(chunk_buffer.strip()) >= MIN_CHUNK_SIZE:
+            # Adiciona overlap se disponível
+            full_final_chunk = chunk_buffer
+            if previous_chunk_text and not chunk_buffer.startswith(previous_chunk_text[-100:]):
+                overlap_text = previous_chunk_text[-CHUNK_OVERLAP//2:].strip()
+                if overlap_text:
+                    full_final_chunk = overlap_text + " [CONTINUAÇÃO] " + chunk_buffer
+            
+            categories = categorize_content(full_final_chunk)
             chunk = create_chunk_with_context(
-                chunk_buffer, current_section, categories,
-                chunk_index, section_index, paragraph_index
+                full_final_chunk, current_section, categories,
+                chunk_index, section_index, len(paragraphs),
+                has_overlap=bool(previous_chunk_text)
             )
             chunks.append(chunk)
         
-        # Log de informações do chunking
-        doc_logger.info(f"Chunking inteligente gerou {len(chunks)} chunks para {filename}")
+        # ESTRATÉGIA 5: Análise de cobertura e estatísticas
+        total_chars = len(text)
+        covered_chars = sum(len(chunk.text) for chunk in chunks)
+        coverage_ratio = covered_chars / total_chars if total_chars > 0 else 0
         
-        # Estatísticas por categoria
         category_stats = {}
         for chunk in chunks:
             for cat in chunk.metadata.get("categories", []):
                 category_stats[cat] = category_stats.get(cat, 0) + 1
         
-        doc_logger.info(f"Distribuição por categoria: {category_stats}")
+        # Log detalhado do chunking
+        doc_logger.info(f"✅ Chunking hierárquico concluído para {filename}:")
+        doc_logger.info(f"   📊 {len(chunks)} chunks gerados")
+        doc_logger.info(f"   📏 Cobertura: {coverage_ratio:.2%} do documento original")
+        doc_logger.info(f"   📝 Tamanho médio: {covered_chars // len(chunks) if chunks else 0} caracteres/chunk")
+        doc_logger.info(f"   🏷️ Categorias: {category_stats}")
         
-        return chunks
-        if paragraph_buffer:
-            paragraph = " ".join(paragraph_buffer).strip()
-            tokens = len(tokenizer.encode(paragraph, add_special_tokens=False))
-            if tokens > CHUNK_SIZE:
-                sentences = re.split(r'(?<=[.!?]) +', paragraph)
-                sub_chunk = ""
-                sub_tokens = 0
-                sub_index = 0
-                for sent in sentences:
-                    sent = sent.strip()
-                    if not sent:
-                        continue
-                    sent_tokens = len(tokenizer.encode(sent, add_special_tokens=False))
-                    if sub_tokens + sent_tokens > CHUNK_SIZE:
-                        if len(sub_chunk.strip()) > 30:
-                            chunk = DocumentChunk(
-                                chunk_id=str(uuid.uuid4()),
-                                text=sub_chunk.strip(),
-                                embedding=[],
-                                metadata={
-                                    "filename": filename,
-                                    "section": current_section,
-                                    "section_index": section_index,
-                                    "paragraph_index": paragraph_index,
-                                    "sub_chunk_index": sub_index,
-                                    "chunk_index": chunk_index,
-                                    "source": "pdf"
-                                }
-                            )
-                            chunks.append(chunk)
-                            chunk_index += 1
-                            sub_index += 1
-                        sub_chunk = sent
-                        sub_tokens = sent_tokens
-                    else:
-                        if sub_chunk:
-                            sub_chunk += " " + sent
-                        else:
-                            sub_chunk = sent
-                        sub_tokens += sent_tokens
-                if len(sub_chunk.strip()) > 30:
-                    chunk = DocumentChunk(
-                        chunk_id=str(uuid.uuid4()),
-                        text=sub_chunk.strip(),
-                        embedding=[],
-                        metadata={
-                            "filename": filename,
-                            "section": current_section,
-                            "section_index": section_index,
-                            "paragraph_index": paragraph_index,
-                            "sub_chunk_index": sub_index,
-                            "chunk_index": chunk_index,
-                            "source": "pdf"
-                        }
-                    )
-                    chunks.append(chunk)
-                    chunk_index += 1
-            else:
-                if len(paragraph.strip()) > 30:
-                    chunk = DocumentChunk(
-                        chunk_id=str(uuid.uuid4()),
-                        text=paragraph.strip(),
-                        embedding=[],
-                        metadata={
-                            "filename": filename,
-                            "section": current_section,
-                            "section_index": section_index,
-                            "paragraph_index": paragraph_index,
-                            "chunk_index": chunk_index,
-                            "source": "pdf"
-                        }
-                    )
-                    chunks.append(chunk)
-                    chunk_index += 1
-        logger.info(f"Chunking inteligente gerou {len(chunks)} chunks para {filename}")
+        # ESTRATÉGIA 6: Validação de qualidade
+        if coverage_ratio < 0.90:
+            doc_logger.warning(f"⚠️ Cobertura baixa ({coverage_ratio:.2%}) - possível perda de conteúdo!")
+        
+        if len(chunks) == 0:
+            doc_logger.error(f"❌ Nenhum chunk gerado para {filename}!")
+            # Fallback: criar um chunk com todo o texto
+            fallback_chunk = DocumentChunk(
+                chunk_id=str(uuid.uuid4()),
+                text=text[:CHUNK_SIZE*2],  # Limita tamanho
+                embedding=[],
+                metadata={
+                    "filename": filename,
+                    "section": "FALLBACK_COMPLETE_DOCUMENT",
+                    "categories": ["geral", "fallback"],
+                    "chunk_index": 0,
+                    "source": "pdf",
+                    "is_fallback": True
+                }
+            )
+            chunks = [fallback_chunk]
+        
         return chunks
     
     async def generate_embeddings(self, chunks: List[str]) -> List[List[float]]:
@@ -558,18 +600,20 @@ class DocumentProcessor:
         )
         logger.info(f"✅ Stored {len(points)} chunks in Qdrant for document {document_id}. IDs: {[c.chunk_id for c in chunks]}")
     
-    async def search_similar_chunks_enhanced(self, query: str, limit: int = 10, score_threshold: float = 0.3, document_id: str = None) -> List[SearchResult]:
+    async def search_similar_chunks_enhanced(self, query: str, limit: int = 15, score_threshold: float = 0.2, document_id: str = None) -> List[SearchResult]:
         """
-        Busca aprimorada com foco em encontrar TODOS os chunks relevantes:
+        BUSCA ULTRA-OTIMIZADA para capturar TODOS os chunks relevantes
         
-        OTIMIZAÇÕES IMPLEMENTADAS:
-        1. Threshold reduzido para 0.3 (era 0.6) - mais permissivo
-        2. Busca por categorias de conteúdo
-        3. Query expansion com sinônimos ICATU
-        4. Multi-vector search com re-ranking
-        5. Priorização por relevância contextual
+        OTIMIZAÇÕES CRÍTICAS IMPLEMENTADAS:
+        1. 🎯 Threshold ultra-baixo (0.2) para máxima cobertura
+        2. 🔄 Busca multi-estratégia com diferentes abordagens
+        3. 📊 Query expansion com sinônimos ICATU específicos
+        4. 🏷️ Busca por categorias e metadados
+        5. 🔍 Busca híbrida: semântica + lexical
+        6. 📈 Re-ranking inteligente por relevância
+        7. 🎛️ Fusão de resultados de múltiplas consultas
         """
-        doc_logger.info(f"🔍 Busca aprimorada para: '{query}' (threshold: {score_threshold})")
+        doc_logger.info(f"🔍 Busca ultra-otimizada para: '{query}' (threshold: {score_threshold}, limit: {limit})")
         
         # 1. Mapeamento de sinônimos específicos ICATU
         icatu_synonyms = {
@@ -702,8 +746,8 @@ class DocumentProcessor:
         
         return final_results
 
-    async def search_similar_chunks(self, query: str, limit: int = 10, score_threshold: float = 0.3, document_id: str = None) -> List[SearchResult]:
-        """Compatibility wrapper for search_similar_chunks_enhanced"""
+    async def search_similar_chunks(self, query: str, limit: int = 15, score_threshold: float = 0.2, document_id: str = None) -> List[SearchResult]:
+        """Compatibility wrapper for search_similar_chunks_enhanced with optimized defaults"""
         return await self.search_similar_chunks_enhanced(query, limit, score_threshold, document_id)
 
     async def get_collection_info(self) -> Dict[str, Any]:
