@@ -6,7 +6,9 @@
     "dev": "next dev --turbopack",
     "build": "next build",
     "start": "next start",
-    "lint": "next lint"
+    "lint": "next lint",
+    "test:chat": "node ../scripts/run-chat-tests.js",
+    "test:chat:simple": "node ../scripts/run-chat-tests.js --simple"
   },
   "dependencies": {
     "@types/ioredis": "^5.0.0",

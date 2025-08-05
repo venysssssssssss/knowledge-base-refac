@@ -38,6 +38,9 @@ class DocumentProcessorLogger:
     
     def warning(self, msg):
         self.logger.warning(msg)
+        
+    def warn(self, msg):
+        self.logger.warning(msg)
 
 # Example usage of the logger
 doc_logger = DocumentProcessorLogger(__name__)

@@ -39,6 +39,12 @@ class InferenceLogger:
 
     def debug(self, msg):
         self.logger.debug(msg)
+    
+    def warning(self, msg):
+        self.logger.warning(msg)
+        
+    def warn(self, msg):
+        self.logger.warning(msg)
 
 # Exemplo de uso do logger
 inference_logger = InferenceLogger(__name__)

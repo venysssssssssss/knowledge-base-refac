@@ -1,7 +1,21 @@
 import React, { useState } from 'react';
 
+interface ChatMessage {
+  id: string;
+  content: string;
+  role: 'user' | 'assistant' | 'system';
+  createdAt: Date;
+  metadata?: {
+    sources: any[];
+    tokens_used: number;
+    processing_time: number;
+    search_time: number;
+    generation_time: number;
+  };
+}
+
 const ChatContainer = () => {
-  const [messages, setMessages] = useState([]);
+  const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [currentMessage, setCurrentMessage] = useState('');
   const [isLoading, setIsLoading] = useState(false);
 
