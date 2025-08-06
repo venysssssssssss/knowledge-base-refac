@@ -7,6 +7,7 @@ import asyncio
 import logging
 import time
 import httpx
+import re
 from typing import List, Dict, Any, Optional
 from contextlib import asynccontextmanager
 
@@ -86,190 +87,497 @@ class RAGService:
             await self.http_client.aclose()
     
     async def search_documents(self, query: str, limit: int = 3, score_threshold: float = 0.5, document_id: str = None) -> List[Dict[str, Any]]:
-        """Search for relevant documents, optionally filtering by document_id"""
+        """Search for relevant documents with enhanced multi-query strategy"""
         try:
-            search_payload = {
-                "query": query,
-                "limit": limit,
-                "score_threshold": score_threshold
-            }
-            if document_id:
-                search_payload["document_id"] = document_id
-            response = await self.http_client.post(
-                f"{DOCUMENT_PROCESSOR_URL}/search",
-                json=search_payload
-            )
-            if response.status_code != 200:
-                rag_logger.error(f"Document search failed: {response.text}")
-                return []
+            # 1. Expandir consulta com variações semânticas
+            expanded_queries = self.expand_search_query(query)
+            rag_logger.info(f"🔍 Busca expandida: {len(expanded_queries)} variações da consulta")
             
-            # Handle different response formats - the document processor might return
-            # either a list of chunks directly or a dict with 'chunks' key
-            response_data = response.json()
-            if isinstance(response_data, dict) and "chunks" in response_data:
-                return response_data["chunks"]
-            return response_data
+            all_results = []
+            
+            # 2. Buscar com múltiplas variações
+            for search_query in expanded_queries:
+                search_payload = {
+                    "query": search_query,
+                    "limit": min(limit * 2, 10),  # Mais resultados por query
+                    "score_threshold": max(score_threshold - 0.1, 0.3)  # Threshold mais permissivo
+                }
+                if document_id:
+                    search_payload["document_id"] = document_id
+                    
+                response = await self.http_client.post(
+                    f"{DOCUMENT_PROCESSOR_URL}/search",
+                    json=search_payload
+                )
+                
+                if response.status_code == 200:
+                    response_data = response.json()
+                    if isinstance(response_data, dict) and "chunks" in response_data:
+                        results = response_data["chunks"]
+                    else:
+                        results = response_data
+                    all_results.extend(results)
+            
+            # 3. Deduplificar e ranquear resultados
+            deduplicated_results = self.deduplicate_and_rank_results(all_results, query)
+            
+            # 4. Retornar melhores resultados
+            final_results = deduplicated_results[:limit]
+            rag_logger.info(f"📊 Busca finalizada: {len(final_results)} chunks selecionados de {len(all_results)} encontrados")
+            
+            return final_results
+            
         except Exception as e:
             rag_logger.error(f"Error searching documents: {e}")
             return []
+
+    def expand_search_query(self, query: str) -> List[str]:
+        """Expande a consulta com variações semânticas e sinônimos"""
+        expanded_queries = [query]  # Consulta original
+        
+        # Mapeamento de sinônimos específicos do domínio ICATU
+        synonym_mapping = {
+            'quem pode': ['quem consegue', 'quem tem permissão', 'autorizado', 'habilitado'],
+            'solicitar': ['pedir', 'requerer', 'realizar', 'fazer'],
+            'alteração': ['mudança', 'modificação', 'atualização', 'correção'],
+            'cadastral': ['cadastro', 'dados pessoais', 'informações'],
+            'documento': ['documentação', 'papéis', 'comprovante'],
+            'procedimento': ['processo', 'fluxo', 'passo a passo', 'como fazer'],
+            'prazo': ['tempo', 'período', 'duração', 'quando'],
+            'titular': ['portador', 'segurado', 'cliente'],
+            'cpf': ['documento federal', 'receita federal'],
+            'endereço': ['residência', 'correspondência', 'localização'],
+            'telefone': ['contato', 'celular', 'número'],
+            'email': ['correio eletrônico', 'e-mail']
+        }
+        
+        query_lower = query.lower()
+        
+        # Adicionar variações com sinônimos
+        for term, synonyms in synonym_mapping.items():
+            if term in query_lower:
+                for synonym in synonyms:
+                    variant = query_lower.replace(term, synonym)
+                    if variant != query_lower:
+                        expanded_queries.append(variant)
+        
+        # Adicionar consultas focadas em palavras-chave
+        keywords = self.extract_query_keywords(query)
+        if len(keywords) > 1:
+            # Consulta com apenas palavras-chave principais
+            expanded_queries.append(' '.join(keywords[:3]))
+            
+            # Consultas individuais por palavra-chave
+            for keyword in keywords[:2]:
+                expanded_queries.append(keyword)
+        
+        # Adicionar variações específicas por tipo de pergunta
+        if any(word in query_lower for word in ['quem', 'pode', 'solicitar']):
+            expanded_queries.extend([
+                'titular pode solicitar',
+                'procurador autorizado',
+                'quem está habilitado'
+            ])
+        elif any(word in query_lower for word in ['como', 'procedimento', 'processo']):
+            expanded_queries.extend([
+                'passo a passo',
+                'fluxo procedimento',
+                'como realizar'
+            ])
+        elif any(word in query_lower for word in ['prazo', 'tempo', 'quando']):
+            expanded_queries.extend([
+                'dias úteis',
+                'tempo necessário',
+                'duração processo'
+            ])
+        elif any(word in query_lower for word in ['documento', 'necessário', 'exigido']):
+            expanded_queries.extend([
+                'documentos obrigatórios',
+                'papéis necessários',
+                'comprovantes exigidos'
+            ])
+        
+        # Remover duplicatas e limitar
+        unique_queries = []
+        for q in expanded_queries:
+            if q not in unique_queries:
+                unique_queries.append(q)
+        
+        return unique_queries[:8]  # Máximo 8 variações
+
+    def extract_query_keywords(self, query: str) -> List[str]:
+        """Extrai palavras-chave importantes da consulta"""
+        # Palavras irrelevantes
+        stop_words = {'o', 'a', 'os', 'as', 'de', 'da', 'do', 'em', 'na', 'no', 'para', 'por', 'com', 'como', 'que', 'é', 'são', 'tem', 'ter', 'pode', 'posso'}
+        
+        words = re.findall(r'\b[a-záéíóúçãõâêî]{3,}\b', query.lower())
+        keywords = [word for word in words if word not in stop_words]
+        
+        return keywords
+
+    def deduplicate_and_rank_results(self, results: List[Dict], original_query: str) -> List[Dict]:
+        """Remove duplicatas e ranqueia resultados por relevância"""
+        if not results:
+            return []
+        
+        # 1. Remover duplicatas por conteúdo
+        seen_content = set()
+        unique_results = []
+        
+        for result in results:
+            content_key = result.get('content', '')[:100]  # Primeiros 100 chars como chave
+            if content_key not in seen_content:
+                seen_content.add(content_key)
+                unique_results.append(result)
+        
+        # 2. Calcular relevância aprimorada
+        for result in unique_results:
+            relevance_score = self.calculate_enhanced_relevance(result, original_query)
+            result['enhanced_score'] = relevance_score
+        
+        # 3. Ordenar por relevância aprimorada
+        unique_results.sort(key=lambda x: x.get('enhanced_score', 0), reverse=True)
+        
+        return unique_results
+
+    def calculate_enhanced_relevance(self, result: Dict, query: str) -> float:
+        """Calcula score de relevância aprimorado"""
+        base_score = result.get('score', 0)
+        content = result.get('content', '').lower()
+        metadata = result.get('metadata', {})
+        
+        # Fatores de relevância
+        relevance_factors = []
+        
+        # 1. Score base do embedding
+        relevance_factors.append(base_score * 0.4)
+        
+        # 2. Correspondência exata de termos
+        query_terms = self.extract_query_keywords(query)
+        exact_matches = sum(1 for term in query_terms if term in content)
+        term_score = (exact_matches / len(query_terms)) * 0.3 if query_terms else 0
+        relevance_factors.append(term_score)
+        
+        # 3. Presença de palavras-chave importantes
+        important_keywords = metadata.get('keywords', [])
+        keyword_overlap = len(set(query_terms) & set(important_keywords))
+        keyword_score = (keyword_overlap / max(len(query_terms), 1)) * 0.2
+        relevance_factors.append(keyword_score)
+        
+        # 4. Tipo de seção (algumas são mais importantes)
+        section_type = metadata.get('section_type', '')
+        section_bonus = 0
+        if 'title' in section_type or 'summary' in section_type:
+            section_bonus = 0.1
+        elif 'main_section' in section_type:
+            section_bonus = 0.05
+        relevance_factors.append(section_bonus)
+        
+        # 5. Comprimento adequado do conteúdo
+        content_length = len(content)
+        length_score = 0
+        if 200 <= content_length <= 1500:  # Tamanho ideal
+            length_score = 0.1
+        elif content_length > 50:  # Mínimo aceitável
+            length_score = 0.05
+        relevance_factors.append(length_score)
+        
+        return sum(relevance_factors)
     
     def build_context_intelligent(self, search_results: List[Dict[str, Any]], question: str) -> str:
         """
-        Construção inteligente de contexto com:
-        1. Ranking por relevância
-        2. Deduplicação semântica  
-        3. Estruturação hierárquica
-        4. Otimização de token usage
+        Construção inteligente de contexto otimizada para máxima precisão
+        Estratégia: Hierarquia semântica + Deduplicação + Contexto estruturado
         """
         if not search_results:
             return ""
         
-        # 1. Filtrar e ranquear resultados
+        rag_logger.info(f"🧠 Construindo contexto inteligente para: '{question[:50]}...'")
+        rag_logger.info(f"📊 Processando {len(search_results)} chunks encontrados")
+        
+        # 1. Filtrar e classificar resultados por qualidade
+        high_quality_results = self.filter_high_quality_results(search_results, question)
+        rag_logger.info(f"✅ {len(high_quality_results)} chunks de alta qualidade selecionados")
+        
+        # 2. Agrupar por relevância semântica
+        grouped_results = self.group_by_semantic_relevance(high_quality_results, question)
+        
+        # 3. Construir contexto hierárquico estruturado
+        structured_context = self.build_hierarchical_context(grouped_results, question)
+        
+        # 4. Otimizar tamanho do contexto
+        final_context = self.optimize_context_size(structured_context, max_chars=3000)
+        
+        rag_logger.info(f"📝 Contexto final: {len(final_context)} caracteres")
+        return final_context
+
+    def filter_high_quality_results(self, results: List[Dict[str, Any]], question: str) -> List[Dict[str, Any]]:
+        """Filtra resultados de alta qualidade"""
+        if not results:
+            return []
+        
         filtered_results = []
-        for result in search_results:
+        query_keywords = self.extract_query_keywords(question.lower())
+        
+        for result in results:
             content = result.get("content", "").strip()
             score = result.get("score", 0)
+            metadata = result.get("metadata", {})
             
-            # Filtrar conteúdo muito curto ou irrelevante
-            if len(content) < 20 or score < 0.3:
-                continue
-                
-            filtered_results.append(result)
+            # Critérios de qualidade
+            quality_score = 0
+            
+            # 1. Score de embedding base
+            if score > 0.8:
+                quality_score += 3
+            elif score > 0.6:
+                quality_score += 2
+            elif score > 0.4:
+                quality_score += 1
+            
+            # 2. Tamanho adequado do conteúdo
+            content_length = len(content)
+            if 100 <= content_length <= 2000:  # Tamanho ideal
+                quality_score += 2
+            elif content_length >= 50:  # Mínimo aceitável
+                quality_score += 1
+            
+            # 3. Correspondência de palavras-chave
+            content_lower = content.lower()
+            keyword_matches = sum(1 for keyword in query_keywords if keyword in content_lower)
+            if keyword_matches >= 2:
+                quality_score += 3
+            elif keyword_matches >= 1:
+                quality_score += 1
+            
+            # 4. Tipo de seção importante
+            section_type = metadata.get('section_type', '')
+            if any(important_type in section_type for important_type in ['title', 'summary', 'main_section']):
+                quality_score += 2
+            
+            # 5. Presença de informações estruturadas
+            if any(indicator in content_lower for indicator in ['procedimento', 'documento', 'prazo', 'quem pode']):
+                quality_score += 1
+            
+            # Aceitar apenas resultados com qualidade suficiente
+            if quality_score >= 3:
+                result['quality_score'] = quality_score
+                filtered_results.append(result)
         
-        # 2. Agrupar por tipo de informação
-        categorized_content = {
-            "solicitantes": [],
-            "prazos": [],
-            "documentos": [], 
-            "procedimentos": [],
-            "outros": []
+        # Ordenar por qualidade e score combinados
+        filtered_results.sort(key=lambda x: (x['quality_score'], x.get('score', 0)), reverse=True)
+        
+        return filtered_results[:8]  # Máximo 8 chunks de alta qualidade
+
+    def group_by_semantic_relevance(self, results: List[Dict[str, Any]], question: str) -> Dict[str, List[Dict]]:
+        """Agrupa resultados por relevância semântica"""
+        grouped = {
+            'direct_answer': [],      # Resposta direta à pergunta
+            'procedure': [],          # Procedimentos e processos
+            'requirements': [],       # Requisitos e documentos
+            'timeframes': [],        # Prazos e tempos
+            'authorization': [],     # Quem pode fazer
+            'context': []            # Contexto geral
         }
         
         question_lower = question.lower()
         
-        for result in filtered_results:
-            content = result.get("content", "")
-            content_lower = content.lower()
+        for result in results:
+            content = result.get('content', '').lower()
+            metadata = result.get('metadata', {})
+            section_title = metadata.get('section_title', '').lower()
             
-            # Categorização baseada em palavras-chave
-            if any(word in content_lower for word in ["titular", "procurador", "curador", "tutor", "solicitar"]):
-                categorized_content["solicitantes"].append(result)
-            elif any(word in content_lower for word in ["prazo", "tempo", "hora", "dias", "zendesk"]):
-                categorized_content["prazos"].append(result)
-            elif any(word in content_lower for word in ["documento", "certidão", "identificação", "foto"]):
-                categorized_content["documentos"].append(result)
-            elif any(word in content_lower for word in ["proceder", "procedimento", "processo", "como"]):
-                categorized_content["procedimentos"].append(result)
-            else:
-                categorized_content["outros"].append(result)
+            # Classificar por tipo de informação
+            categorized = False
+            
+            # Perguntas sobre autorização/permissão
+            if any(word in question_lower for word in ['quem', 'pode', 'autorizado', 'permitido']):
+                if any(word in content for word in ['titular', 'pode', 'autorizado', 'procurador', 'curador']):
+                    grouped['authorization'].append(result)
+                    categorized = True
+            
+            # Perguntas sobre procedimentos
+            if any(word in question_lower for word in ['como', 'procedimento', 'processo', 'passo']):
+                if any(word in content for word in ['procedimento', 'processo', 'seguir', 'realizar', 'fluxo']):
+                    grouped['procedure'].append(result)
+                    categorized = True
+            
+            # Perguntas sobre documentos/requisitos
+            if any(word in question_lower for word in ['documento', 'necessário', 'exigido', 'obrigatório']):
+                if any(word in content for word in ['documento', 'necessário', 'exigido', 'obrigatório', 'formulário']):
+                    grouped['requirements'].append(result)
+                    categorized = True
+            
+            # Perguntas sobre prazos
+            if any(word in question_lower for word in ['prazo', 'tempo', 'quando', 'duração']):
+                if any(word in content for word in ['prazo', 'dias', 'horas', 'tempo', 'úteis']):
+                    grouped['timeframes'].append(result)
+                    categorized = True
+            
+            # Se tem alta relevância, considerar resposta direta
+            if result.get('score', 0) > 0.8 or result.get('quality_score', 0) >= 5:
+                grouped['direct_answer'].append(result)
+                categorized = True
+            
+            # Caso contrário, adicionar ao contexto geral
+            if not categorized:
+                grouped['context'].append(result)
         
-        # 3. Construir contexto estruturado
+        return grouped
+
+    def build_hierarchical_context(self, grouped_results: Dict[str, List[Dict]], question: str) -> str:
+        """Constrói contexto hierárquico baseado na pergunta"""
         context_parts = []
         
-        # Priorizar categoria mais relevante para a pergunta
-        category_priority = ["outros"]  # Default
+        # Determinar prioridade baseada na pergunta
+        question_lower = question.lower()
         
-        if any(word in question_lower for word in ["quem", "pode", "solicitar"]):
-            category_priority = ["solicitantes", "procedimentos", "outros", "documentos", "prazos"]
-        elif any(word in question_lower for word in ["prazo", "tempo", "quanto tempo", "quando"]):
-            category_priority = ["prazos", "procedimentos", "outros", "solicitantes", "documentos"]
-        elif any(word in question_lower for word in ["documento", "apresentar", "necessário"]):
-            category_priority = ["documentos", "procedimentos", "outros", "solicitantes", "prazos"]
-        elif any(word in question_lower for word in ["como", "proceder", "procedimento"]):
-            category_priority = ["procedimentos", "outros", "documentos", "prazos", "solicitantes"]
+        if any(word in question_lower for word in ['quem', 'pode', 'autorizado']):
+            priority_order = ['authorization', 'direct_answer', 'requirements', 'procedure', 'timeframes', 'context']
+        elif any(word in question_lower for word in ['como', 'procedimento', 'processo']):
+            priority_order = ['procedure', 'direct_answer', 'requirements', 'authorization', 'timeframes', 'context']
+        elif any(word in question_lower for word in ['documento', 'necessário', 'obrigatório']):
+            priority_order = ['requirements', 'direct_answer', 'procedure', 'authorization', 'timeframes', 'context']
+        elif any(word in question_lower for word in ['prazo', 'tempo', 'quando']):
+            priority_order = ['timeframes', 'direct_answer', 'procedure', 'requirements', 'authorization', 'context']
+        else:
+            priority_order = ['direct_answer', 'procedure', 'requirements', 'authorization', 'timeframes', 'context']
         
-        # 4. Construir contexto seguindo prioridade
+        # Construir contexto seguindo a prioridade
+        section_headers = {
+            'authorization': '👥 QUEM PODE SOLICITAR',
+            'procedure': '📋 PROCEDIMENTOS',
+            'requirements': '📄 DOCUMENTOS NECESSÁRIOS',
+            'timeframes': '⏰ PRAZOS',
+            'direct_answer': '🎯 INFORMAÇÃO PRINCIPAL',
+            'context': '📌 CONTEXTO ADICIONAL'
+        }
+        
         used_content = set()
         total_chars = 0
-        max_chars = 2000  # Limitar tamanho do contexto
+        max_chars_per_section = {
+            'direct_answer': 800,
+            'authorization': 600,
+            'procedure': 700,
+            'requirements': 600,
+            'timeframes': 400,
+            'context': 400
+        }
         
-        for category in category_priority:
-            if total_chars >= max_chars:
+        for category in priority_order:
+            if total_chars >= 2500:  # Limite global
                 break
                 
-            category_results = categorized_content[category]
-            # Ordenar por score dentro da categoria
-            category_results.sort(key=lambda x: x.get("score", 0), reverse=True)
+            results = grouped_results.get(category, [])
+            if not results:
+                continue
             
-            for i, result in enumerate(category_results):
-                content = result.get("content", "")
-                content_key = content[:50]  # Chave para deduplicação
+            section_content = []
+            section_chars = 0
+            max_section_chars = max_chars_per_section.get(category, 500)
+            
+            for result in results[:3]:  # Máximo 3 itens por categoria
+                content = result.get('content', '').strip()
+                content_key = content[:100]  # Chave para deduplicação
                 
-                if content_key in used_content or total_chars + len(content) > max_chars:
+                if content_key in used_content:
                     continue
                 
+                if section_chars + len(content) > max_section_chars:
+                    # Truncar conteúdo se necessário
+                    remaining_chars = max_section_chars - section_chars
+                    if remaining_chars > 200:  # Só truncar se sobrar espaço razoável
+                        content = content[:remaining_chars] + "..."
+                    else:
+                        break
+                
                 used_content.add(content_key)
-                filename = result.get("metadata", {}).get("filename", "ICATU")
-                score = result.get("score", 0)
+                score = result.get('score', 0)
+                filename = result.get('metadata', {}).get('filename', 'ICATU')
                 
-                # Formatação inteligente baseada na categoria
-                if category == "prazos":
-                    prefix = "⏰ PRAZO"
-                elif category == "documentos":
-                    prefix = "📄 DOCUMENTAÇÃO"
-                elif category == "solicitantes":
-                    prefix = "👥 SOLICITANTES"
-                elif category == "procedimentos":
-                    prefix = "📋 PROCEDIMENTO"
-                else:
-                    prefix = "📌 INFORMAÇÃO"
+                formatted_content = f"• {content} [Relevância: {score:.2f}]"
+                section_content.append(formatted_content)
+                section_chars += len(formatted_content)
                 
-                context_part = f"{prefix} (Relevância: {score:.1f}):\n{content}"
-                context_parts.append(context_part)
-                total_chars += len(content)
-                
-                # Limitar número de itens por categoria
-                if len([p for p in context_parts if prefix in p]) >= 3:
+                if section_chars >= max_section_chars:
                     break
+            
+            if section_content:
+                header = section_headers.get(category, f'� {category.upper()}')
+                section_text = f"\n{header}:\n" + "\n".join(section_content)
+                context_parts.append(section_text)
+                total_chars += len(section_text)
         
-        final_context = "\n\n".join(context_parts)
+        if not context_parts:
+            return "Informação específica não encontrada nos documentos disponíveis."
         
-        # 5. Adicionar metadados de contexto
-        context_metadata = f"""
-RESUMO DO CONTEXTO:
-- Total de fontes: {len(context_parts)}
-- Categorias cobertas: {[cat for cat in category_priority if categorized_content[cat]]}
-- Foco principal: {category_priority[0]}
+        # Adicionar cabeçalho contextual
+        context_header = f"""CONTEXTO ICATU - Alteração Cadastral
+Pergunta: {question}
+Fontes encontradas: {len([r for results in grouped_results.values() for r in results])} documentos
 
-CONTEÚDO TÉCNICO:
-{final_context}
-"""
+INFORMAÇÕES RELEVANTES:"""
         
-        return context_metadata.strip()
+        full_context = context_header + "\n" + "\n".join(context_parts)
+        
+        return full_context
+
+    def optimize_context_size(self, context: str, max_chars: int = 3000) -> str:
+        """Otimiza o tamanho do contexto mantendo as informações mais importantes"""
+        if len(context) <= max_chars:
+            return context
+        
+        # Dividir em seções
+        sections = context.split('\n\n')
+        
+        # Priorizar seções por importância (baseado nos emojis/headers)
+        priority_order = ['🎯', '👥', '📋', '📄', '⏰', '📌']
+        
+        important_sections = []
+        remaining_sections = []
+        
+        for section in sections:
+            is_important = any(emoji in section for emoji in priority_order[:3])
+            if is_important:
+                important_sections.append(section)
+            else:
+                remaining_sections.append(section)
+        
+        # Construir contexto otimizado
+        optimized_context = ""
+        
+        # Adicionar seções importantes primeiro
+        for section in important_sections:
+            if len(optimized_context) + len(section) <= max_chars:
+                optimized_context += section + "\n\n"
+            else:
+                # Truncar seção se necessário
+                remaining_space = max_chars - len(optimized_context) - 50
+                if remaining_space > 200:
+                    optimized_context += section[:remaining_space] + "...\n\n"
+                break
+        
+        # Adicionar seções restantes se houver espaço
+        for section in remaining_sections:
+            if len(optimized_context) + len(section) <= max_chars:
+                optimized_context += section + "\n\n"
+            else:
+                break
+        
+        return optimized_context.strip()
 
     async def generate_answer_enhanced(self, question: str, context: str, max_tokens: int = 500, temperature: float = 0.1) -> dict:
-        """Generate enhanced answer using Mistral with intelligent prompting"""
+        """Generate enhanced answer using Mistral with advanced prompting strategy"""
         try:
-            # Advanced prompt engineering with CoT reasoning
-            enhanced_prompt = f"""Você é um especialista em procedimentos ICATU Seguros com acesso a documentos técnicos.
-
-METODOLOGIA DE ANÁLISE:
-1. LEIA o contexto fornecido cuidadosamente
-2. IDENTIFIQUE palavras-chave relevantes na pergunta  
-3. BUSQUE informações específicas no contexto
-4. CONFIRME se a informação está disponível
-5. RESPONDA de forma precisa e completa
-
-REGRAS CRÍTICAS:
-- Use APENAS informações do contexto fornecido
-- Se não encontrar a informação: "A informação solicitada não está disponível nos documentos fornecidos."
-- Mantenha terminologia técnica ICATU
-- Seja direto e objetivo
-- Cite prazos e procedimentos exatos quando disponíveis
-
-CONTEXTO TÉCNICO ICATU:
-{context}
-
-PERGUNTA ESPECÍFICA: {question}
-
-RESPOSTA FINAL (baseada exclusivamente no contexto):"""
+            # Prompt engineering otimizado para máxima precisão
+            enhanced_prompt = self.build_optimal_prompt(question, context)
             
             mistral_payload = {
                 "question": question,
                 "context": enhanced_prompt,
                 "max_tokens": max_tokens,
-                "temperature": min(temperature, 0.2),  # Temperatura baixa para precisão máxima
-                "instructions": "Responda de forma precisa baseado exclusivamente no contexto fornecido."
+                "temperature": min(temperature, 0.15),  # Temperatura muito baixa para máxima precisão
+                "instructions": "Responda EXCLUSIVAMENTE baseado no contexto fornecido. Se a informação não estiver no contexto, diga que não está disponível."
             }
             
             response = await self.http_client.post(
@@ -281,14 +589,144 @@ RESPOSTA FINAL (baseada exclusivamente no contexto):"""
                 raise HTTPException(status_code=500, detail=f"Mistral service error: {response.text}")
             
             result = response.json()
-            rag_logger.debug(f"Mistral response type: {type(result)}, content: {result}")
+            rag_logger.debug(f"Mistral response: {result}")
             
-            # Return the full response object for compatibility
+            # Pós-processamento da resposta
+            processed_answer = self.post_process_answer(result.get("answer", ""), question, context)
+            result["answer"] = processed_answer
+            
             return result
             
         except Exception as e:
             rag_logger.error(f"Error generating answer: {e}")
             raise HTTPException(status_code=500, detail=f"Answer generation failed: {str(e)}")
+
+    def build_optimal_prompt(self, question: str, context: str) -> str:
+        """Constrói o prompt otimizado para o Mistral"""
+        
+        # Determinar tipo de pergunta para personalizar o prompt
+        question_type = self.classify_question_type(question)
+        
+        # Prompts especializados por tipo de pergunta
+        specialized_instructions = {
+            'authorization': """
+Você é um especialista em regulamentações ICATU. Responda com precisão sobre QUEM pode solicitar alterações cadastrais.
+FOQUE EM: autorização, permissões, quem está habilitado, limitações.
+FORMATO: Liste claramente quem pode e quem não pode, com base APENAS no contexto.
+""",
+            'procedure': """
+Você é um especialista em processos ICATU. Explique COMO realizar procedimentos de alteração cadastral.
+FOQUE EM: passos, fluxos, sequência de ações, orientações práticas.
+FORMATO: Liste os passos de forma ordenada e clara, baseado APENAS no contexto.
+""",
+            'requirements': """
+Você é um especialista em documentação ICATU. Liste QUAIS documentos são necessários.
+FOQUE EM: documentos obrigatórios, formulários, comprovantes necessários.
+FORMATO: Liste todos os documentos exigidos, baseado APENAS no contexto.
+""",
+            'timeframes': """
+Você é um especialista em prazos ICATU. Informe QUANDO/QUANTO TEMPO leva cada processo.
+FOQUE EM: prazos específicos, duração, tempos de processamento.
+FORMATO: Indique prazos claros e específicos, baseado APENAS no contexto.
+""",
+            'general': """
+Você é um especialista em procedimentos ICATU. Responda de forma abrangente e precisa.
+FOQUE EM: informação mais relevante para a pergunta específica.
+FORMATO: Resposta clara e direta, baseado APENAS no contexto.
+"""
+        }
+        
+        instruction = specialized_instructions.get(question_type, specialized_instructions['general'])
+        
+        # Prompt estruturado final
+        enhanced_prompt = f"""SISTEMA: {instruction}
+
+REGRAS CRÍTICAS:
+1. Use APENAS informações do contexto fornecido abaixo
+2. Se a informação não estiver no contexto: "A informação solicitada não está disponível nos documentos fornecidos"
+3. Seja específico e objetivo
+4. Mantenha terminologia técnica ICATU
+5. Cite procedimentos e prazos exatos quando disponíveis
+6. NÃO invente ou extrapole informações
+
+CONTEXTO ICATU OFICIAL:
+{context}
+
+PERGUNTA ESPECÍFICA: {question}
+
+RESPOSTA TÉCNICA (baseada exclusivamente no contexto acima):"""
+        
+        return enhanced_prompt
+
+    def classify_question_type(self, question: str) -> str:
+        """Classifica o tipo de pergunta para personalizar o prompt"""
+        question_lower = question.lower()
+        
+        if any(word in question_lower for word in ['quem', 'pode', 'autorizado', 'permitido', 'habilitado']):
+            return 'authorization'
+        elif any(word in question_lower for word in ['como', 'procedimento', 'processo', 'passo', 'realizar']):
+            return 'procedure'
+        elif any(word in question_lower for word in ['documento', 'necessário', 'obrigatório', 'exigido', 'formulário']):
+            return 'requirements'
+        elif any(word in question_lower for word in ['prazo', 'tempo', 'quando', 'duração', 'demora']):
+            return 'timeframes'
+        else:
+            return 'general'
+
+    def post_process_answer(self, answer: str, question: str, context: str) -> str:
+        """Pós-processa a resposta para melhorar qualidade e precisão"""
+        if not answer or len(answer.strip()) < 10:
+            return "Não foi possível gerar uma resposta adequada com base no contexto fornecido."
+        
+        # Limpar resposta
+        processed_answer = answer.strip()
+        
+        # Remover repetições desnecessárias
+        lines = processed_answer.split('\n')
+        unique_lines = []
+        seen_content = set()
+        
+        for line in lines:
+            line_clean = line.strip().lower()
+            if line_clean and line_clean not in seen_content:
+                seen_content.add(line_clean)
+                unique_lines.append(line.strip())
+        
+        processed_answer = '\n'.join(unique_lines)
+        
+        # Adicionar formatação se necessário
+        question_type = self.classify_question_type(question)
+        
+        if question_type == 'authorization' and 'titular' in processed_answer.lower():
+            if not processed_answer.startswith('**'):
+                processed_answer = f"**QUEM PODE SOLICITAR:**\n{processed_answer}"
+        
+        elif question_type == 'procedure' and any(word in processed_answer.lower() for word in ['procedimento', 'processo']):
+            if not processed_answer.startswith('**'):
+                processed_answer = f"**PROCEDIMENTO:**\n{processed_answer}"
+        
+        elif question_type == 'requirements' and 'documento' in processed_answer.lower():
+            if not processed_answer.startswith('**'):
+                processed_answer = f"**DOCUMENTOS NECESSÁRIOS:**\n{processed_answer}"
+        
+        elif question_type == 'timeframes' and any(word in processed_answer.lower() for word in ['prazo', 'dias', 'horas']):
+            if not processed_answer.startswith('**'):
+                processed_answer = f"**PRAZOS:**\n{processed_answer}"
+        
+        # Garantir que não seja muito longo
+        if len(processed_answer) > 800:
+            # Truncar preservando frases completas
+            sentences = processed_answer.split('.')
+            truncated = ""
+            for sentence in sentences:
+                if len(truncated + sentence + '.') <= 750:
+                    truncated += sentence + '.'
+                else:
+                    break
+            if truncated:
+                processed_answer = truncated + "\n\n[Resposta truncada - consulte o documento completo para mais detalhes]"
+        
+        return processed_answer
 
     async def generate_answer(self, question: str, context: str, max_tokens: int = 500, temperature: float = 0.1) -> dict:
         """Generate answer using the enhanced method - compatibility wrapper"""

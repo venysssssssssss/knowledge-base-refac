@@ -684,29 +684,949 @@ class DocumentProcessor:
             text += '.'
         
         return text
+
+    def smart_structural_chunking(self, text: str, filename: str) -> List[DocumentChunk]:
+        """
+        Chunking inteligente otimizado para preservar TODO o contexto do documento
+        Estratégia: Divisão semântica com overlap inteligente e estrutura hierárquica
+        """
+        logger.info(f"🧠 Iniciando chunking estrutural inteligente para {filename}")
+        logger.info(f"📊 Tamanho do texto de entrada: {len(text)} caracteres")
+        
+        # 1. Limpeza e normalização avançada preservando estrutura
+        clean_text = self.advanced_text_cleaning_preserving_structure(text)
+        logger.info(f"🧹 Após limpeza estrutural: {len(clean_text)} caracteres")
+        
+        # 2. Detecção de estrutura hierárquica do documento
+        document_structure = self.detect_hierarchical_structure(clean_text)
+        logger.info(f"📋 Estrutura detectada: {len(document_structure['sections'])} seções principais")
+        
+        # 3. Criação de chunks com estratégia multi-nível
+        chunks = self.create_hierarchical_chunks(document_structure, filename)
+        
+        # 4. Adição de chunks de contexto global
+        global_chunks = self.create_global_context_chunks(clean_text, filename, len(chunks))
+        chunks.extend(global_chunks)
+        
+        # 5. Validação final e otimização
+        optimized_chunks = self.optimize_chunks_for_retrieval(chunks)
+        
+        logger.info(f"✅ Chunking concluído para {filename}:")
+        logger.info(f"   📊 {len(optimized_chunks)} chunks gerados")
+        logger.info(f"   📏 Cobertura: {self.calculate_coverage(optimized_chunks, clean_text):.1f}% do documento")
+        logger.info(f"   📝 Tamanho médio: {sum(len(c.text) for c in optimized_chunks) // len(optimized_chunks)} caracteres/chunk")
+        
+        return optimized_chunks
+
+    def advanced_text_cleaning_preserving_structure(self, text: str) -> str:
+        """Limpeza avançada que preserva a estrutura semântica do documento"""
+        logger.info("🧹 Iniciando limpeza preservando estrutura...")
+        
+        # 1. Normalizar encoding e caracteres problemáticos
+        text = text.encode('utf-8', errors='ignore').decode('utf-8')
+        
+        # 2. Preservar quebras de seção importantes
+        text = re.sub(r'(#{1,6}\s+[^\n]+)', r'\n\1\n', text)  # Headers Markdown
+        text = re.sub(r'(\d+\.\s+[A-Z][^\n]+)', r'\n\1\n', text)  # Seções numeradas
+        
+        # 3. Corrigir caracteres com problemas de encoding
+        encoding_fixes = {
+            'Alterao': 'Alteração',
+            'Capitalizao': 'Capitalização', 
+            'Informaes': 'Informações',
+            'Solicitao': 'Solicitação',
+            'Identificao': 'Identificação',
+            'Manifestao': 'Manifestação',
+            'Orientao': 'Orientação',
+            'Concluso': 'Conclusão',
+            'Atualizao': 'Atualização',
+            'Incluso': 'Inclusão',
+            'Expediao': 'Expedição',
+            'Aplicao': 'Aplicação',
+            'Validao': 'Validação',
+            'Autenticao': 'Autenticação',
+            'Manifestaes': 'Manifestações',
+            'Orientaes': 'Orientações',
+            'Solicitaes': 'Solicitações',
+            'Procurao': 'Procuração',
+            'Telefone/E-mail': 'Telefone / E-mail',
+            'amp;': '&'
+        }
+        
+        for wrong, correct in encoding_fixes.items():
+            text = text.replace(wrong, correct)
+        
+        # 4. Normalizar espaçamentos mantendo estrutura
+        text = re.sub(r'\n{4,}', '\n\n\n', text)  # Max 3 quebras
+        text = re.sub(r' {3,}', '  ', text)  # Max 2 espaços
+        
+        # 5. Garantir pontuação adequada
+        text = re.sub(r'([a-zA-Z])(\n#{1,6})', r'\1.\n\2', text)  # Ponto antes de headers
+        
+        logger.info(f"🧹 Limpeza concluída: {len(encoding_fixes)} correções aplicadas")
+        return text.strip()
+
+    def detect_hierarchical_structure(self, text: str) -> Dict[str, Any]:
+        """Detecta a estrutura hierárquica completa do documento"""
+        logger.info("📋 Detectando estrutura hierárquica...")
+        
+        lines = text.split('\n')
+        structure = {
+            'title': '',
+            'sections': [],
+            'metadata': {
+                'total_lines': len(lines),
+                'estimated_reading_time': len(text) // 1000,  # ~1000 chars/min
+                'document_type': 'manual'
+            }
+        }
+        
+        current_section = None
+        current_subsection = None
+        section_patterns = [
+            (r'^#{1,2}\s+(.+)', 'main_section', 1),
+            (r'^#{3,4}\s+(.+)', 'subsection', 2),
+            (r'^(\d+)\.\s+(.+)', 'numbered_section', 1),
+            (r'^([a-z])\)\s+(.+)', 'lettered_subsection', 2),
+            (r'^([A-Z][A-Z\s]{3,}):?\s*$', 'emphasis_section', 1),
+            (r'^(.+):$', 'colon_section', 2)
+        ]
+        
+        for line_num, line in enumerate(lines):
+            line = line.strip()
+            if not line:
+                continue
+                
+            # Detectar título principal
+            if line_num < 5 and ('manual' in line.lower() or 'icatu' in line.lower()):
+                structure['title'] = line
+                continue
+            
+            # Detectar seções
+            section_detected = False
+            for pattern, section_type, level in section_patterns:
+                match = re.match(pattern, line, re.IGNORECASE)
+                if match:
+                    if level == 1:  # Seção principal
+                        if current_section:
+                            structure['sections'].append(current_section)
+                        current_section = {
+                            'title': match.group(1) if len(match.groups()) == 1 else match.group(2),
+                            'type': section_type,
+                            'level': level,
+                            'content': [],
+                            'subsections': [],
+                            'start_line': line_num,
+                            'keywords': [],
+                            'topics': []
+                        }
+                        current_subsection = None
+                    elif level == 2 and current_section:  # Subseção
+                        if current_subsection:
+                            current_section['subsections'].append(current_subsection)
+                        current_subsection = {
+                            'title': match.group(1) if len(match.groups()) == 1 else match.group(2),
+                            'type': section_type,
+                            'level': level,
+                            'content': [],
+                            'start_line': line_num,
+                            'keywords': [],
+                            'topics': []
+                        }
+                    section_detected = True
+                    break
+            
+            if not section_detected:
+                # Adicionar conteúdo à seção/subseção atual
+                if current_subsection:
+                    current_subsection['content'].append(line)
+                elif current_section:
+                    current_section['content'].append(line)
+        
+        # Finalizar última seção
+        if current_subsection and current_section:
+            current_section['subsections'].append(current_subsection)
+        if current_section:
+            structure['sections'].append(current_section)
+        
+        # Enriquecer seções com metadados
+        for section in structure['sections']:
+            section['keywords'] = self.extract_section_keywords(section)
+            section['topics'] = self.extract_section_topics(section)
+            section['end_line'] = section['start_line'] + len(section['content']) + len(section['subsections'])
+            
+            for subsection in section['subsections']:
+                subsection['keywords'] = self.extract_section_keywords(subsection)
+                subsection['topics'] = self.extract_section_topics(subsection)
+        
+        logger.info(f"📋 Estrutura detectada: {len(structure['sections'])} seções, título: '{structure['title'][:50]}...'")
+        return structure
+
+    def create_hierarchical_chunks(self, structure: Dict[str, Any], filename: str) -> List[DocumentChunk]:
+        """Cria chunks preservando a hierarquia e contexto semântico"""
+        logger.info("📦 Criando chunks hierárquicos...")
+        
+        chunks = []
+        chunk_index = 0
+        
+        # 1. Chunk do título e contexto geral
+        if structure['title']:
+            title_chunk = DocumentChunk(
+                chunk_id=f"{filename}_title_{chunk_index:03d}",
+                text=f"# {structure['title']}\n\nEste é um manual da ICATU sobre procedimentos de alteração cadastral.",
+                embedding=[],
+                metadata={
+                    'filename': filename,
+                    'section_title': 'Título Principal',
+                    'section_type': 'title',
+                    'section_index': chunk_index,
+                    'is_title': True,
+                    'topics': ['manual', 'icatu', 'alteracao_cadastral'],
+                    'keywords': ['manual', 'icatu', 'alteração', 'cadastral'],
+                    'context_summary': 'Documento principal sobre alterações cadastrais na ICATU'
+                }
+            )
+            chunks.append(title_chunk)
+            chunk_index += 1
+        
+        # 2. Chunks das seções principais
+        for section_idx, section in enumerate(structure['sections']):
+            section_content = self.build_section_content(section)
+            
+            if len(section_content) <= 1500:
+                # Seção pequena: um chunk único
+                chunk = DocumentChunk(
+                    chunk_id=f"{filename}_section_{chunk_index:03d}",
+                    text=section_content,
+                    embedding=[],
+                    metadata={
+                        'filename': filename,
+                        'section_title': section['title'],
+                        'section_type': section['type'],
+                        'section_index': chunk_index,
+                        'hierarchical_level': section['level'],
+                        'topics': section['topics'],
+                        'keywords': section['keywords'],
+                        'context_summary': self.generate_context_summary(section_content),
+                        'has_subsections': len(section['subsections']) > 0
+                    }
+                )
+                chunks.append(chunk)
+                chunk_index += 1
+            else:
+                # Seção grande: dividir em sub-chunks com overlap
+                sub_chunks = self.create_overlapping_chunks(
+                    section_content, section, filename, chunk_index
+                )
+                chunks.extend(sub_chunks)
+                chunk_index += len(sub_chunks)
+        
+        return chunks
+
+    def build_section_content(self, section: Dict[str, Any]) -> str:
+        """Constrói o conteúdo completo de uma seção com contexto"""
+        content_parts = []
+        
+        # Título da seção
+        content_parts.append(f"## {section['title']}")
+        
+        # Conteúdo principal da seção
+        if section['content']:
+            content_parts.append('\n'.join(section['content']))
+        
+        # Subseções
+        for subsection in section['subsections']:
+            content_parts.append(f"\n### {subsection['title']}")
+            if subsection['content']:
+                content_parts.append('\n'.join(subsection['content']))
+        
+        return '\n\n'.join(content_parts)
+
+    def create_overlapping_chunks(self, content: str, section: Dict[str, Any], 
+                                filename: str, start_index: int) -> List[DocumentChunk]:
+        """Cria chunks com overlap inteligente para seções grandes"""
+        chunks = []
+        max_chunk_size = 1500
+        overlap_size = 200
+        
+        # Dividir por parágrafos preservando contexto
+        paragraphs = [p.strip() for p in content.split('\n\n') if p.strip()]
+        
+        current_chunk = ""
+        chunk_paragraphs = []
+        chunk_count = 0
+        
+        for i, paragraph in enumerate(paragraphs):
+            # Verificar se adicionar este parágrafo excederia o limite
+            potential_chunk = current_chunk + "\n\n" + paragraph if current_chunk else paragraph
+            
+            if len(potential_chunk) > max_chunk_size and current_chunk:
+                # Criar chunk atual
+                chunk_text = self.add_section_context(current_chunk, section)
+                chunk = DocumentChunk(
+                    chunk_id=f"{filename}_section_{start_index + chunk_count:03d}",
+                    text=chunk_text,
+                    embedding=[],
+                    metadata={
+                        'filename': filename,
+                        'section_title': section['title'],
+                        'section_type': f"{section['type']}_part",
+                        'section_index': start_index + chunk_count,
+                        'part_number': chunk_count + 1,
+                        'hierarchical_level': section['level'],
+                        'topics': section['topics'],
+                        'keywords': self.extract_keywords_from_text(current_chunk),
+                        'context_summary': self.generate_context_summary(current_chunk),
+                        'is_continuation': chunk_count > 0,
+                        'has_next_part': i < len(paragraphs) - 1
+                    }
+                )
+                chunks.append(chunk)
+                
+                # Preparar próximo chunk com overlap
+                overlap_text = self.get_overlap_text(current_chunk, overlap_size)
+                current_chunk = overlap_text + "\n\n" + paragraph if overlap_text else paragraph
+                chunk_count += 1
+            else:
+                current_chunk = potential_chunk
+        
+        # Último chunk
+        if current_chunk:
+            chunk_text = self.add_section_context(current_chunk, section)
+            chunk = DocumentChunk(
+                chunk_id=f"{filename}_section_{start_index + chunk_count:03d}",
+                text=chunk_text,
+                embedding=[],
+                metadata={
+                    'filename': filename,
+                    'section_title': section['title'],
+                    'section_type': f"{section['type']}_final",
+                    'section_index': start_index + chunk_count,
+                    'part_number': chunk_count + 1,
+                    'hierarchical_level': section['level'],
+                    'topics': section['topics'],
+                    'keywords': self.extract_keywords_from_text(current_chunk),
+                    'context_summary': self.generate_context_summary(current_chunk),
+                    'is_continuation': chunk_count > 0,
+                    'has_next_part': False
+                }
+            )
+            chunks.append(chunk)
+        
+        return chunks
+
+    def add_section_context(self, content: str, section: Dict[str, Any]) -> str:
+        """Adiciona contexto da seção ao chunk"""
+        context_prefix = f"[CONTEXTO: {section['title']}]\n\n"
+        return context_prefix + content
+
+    def get_overlap_text(self, text: str, overlap_size: int) -> str:
+        """Extrai texto de overlap do final do chunk atual"""
+        sentences = text.split('.')
+        overlap_text = ""
+        for sentence in reversed(sentences):
+            potential_overlap = sentence.strip() + ". " + overlap_text
+            if len(potential_overlap) <= overlap_size:
+                overlap_text = potential_overlap
+            else:
+                break
+        return overlap_text.strip()
+
+    def create_global_context_chunks(self, text: str, filename: str, existing_count: int) -> List[DocumentChunk]:
+        """Cria chunks de contexto global para consultas gerais"""
+        logger.info("🌐 Criando chunks de contexto global...")
+        
+        chunks = []
+        
+        # 1. Chunk de resumo executivo
+        summary = self.generate_executive_summary(text)
+        summary_chunk = DocumentChunk(
+            chunk_id=f"{filename}_summary_{existing_count:03d}",
+            text=f"# RESUMO EXECUTIVO - {filename}\n\n{summary}",
+            embedding=[],
+            metadata={
+                'filename': filename,
+                'section_title': 'Resumo Executivo',
+                'section_type': 'executive_summary',
+                'section_index': existing_count,
+                'is_summary': True,
+                'topics': ['resumo', 'geral', 'overview'],
+                'keywords': ['resumo', 'geral', 'principal', 'importante'],
+                'context_summary': 'Resumo executivo de todo o documento'
+            }
+        )
+        chunks.append(summary_chunk)
+        
+        # 2. Chunk de palavras-chave e tópicos principais
+        keywords_summary = self.generate_keywords_summary(text)
+        keywords_chunk = DocumentChunk(
+            chunk_id=f"{filename}_keywords_{existing_count + 1:03d}",
+            text=f"# TÓPICOS E PALAVRAS-CHAVE - {filename}\n\n{keywords_summary}",
+            embedding=[],
+            metadata={
+                'filename': filename,
+                'section_title': 'Tópicos Principais',
+                'section_type': 'keywords_summary',
+                'section_index': existing_count + 1,
+                'is_keywords': True,
+                'topics': ['keywords', 'topicos', 'principal'],
+                'keywords': self.extract_keywords_from_text(text)[:20],
+                'context_summary': 'Compilação de todos os tópicos e palavras-chave do documento'
+            }
+        )
+        chunks.append(keywords_chunk)
+        
+        return chunks
+
+    def generate_executive_summary(self, text: str) -> str:
+        """Gera um resumo executivo do documento"""
+        # Extrair primeiros parágrafos significativos
+        paragraphs = [p.strip() for p in text.split('\n\n') if p.strip() and len(p) > 50]
+        
+        summary_parts = [
+            "Este manual da ICATU Capitalização e Vida apresenta os procedimentos para alteração cadastral de clientes.",
+            "\nPRINCIPAIS TÓPICOS ABORDADOS:"
+        ]
+        
+        # Identificar tópicos principais
+        main_topics = []
+        for paragraph in paragraphs[:20]:  # Primeiros 20 parágrafos
+            if any(keyword in paragraph.lower() for keyword in ['quem pode', 'tipos de', 'documentos', 'procedimento']):
+                clean_para = paragraph.replace('\n', ' ').strip()
+                if len(clean_para) < 200:
+                    main_topics.append(f"• {clean_para}")
+        
+        summary_parts.extend(main_topics[:8])  # Máximo 8 tópicos
+        summary_parts.append("\nEste documento é essencial para operadores que processam solicitações de alteração cadastral.")
+        
+        return '\n'.join(summary_parts)
+
+    def generate_keywords_summary(self, text: str) -> str:
+        """Gera resumo de palavras-chave e tópicos"""
+        keywords = self.extract_keywords_from_text(text)
+        
+        categorized_keywords = {
+            'Solicitantes': ['titular', 'procurador', 'curador', 'tutor'],
+            'Documentos': ['cpf', 'rg', 'certidão', 'formulário', 'assinatura'],
+            'Procedimentos': ['alteração', 'atualização', 'validação', 'registro'],
+            'Prazos': ['dias', 'úteis', 'horas', 'prazo'],
+            'Sistemas': ['zendesk', 'sisprev', 'mumps', 'sistema'],
+            'Canais': ['correio', 'email', 'formulário', 'site']
+        }
+        
+        summary_parts = ["PRINCIPAIS CATEGORIAS E TERMOS:\n"]
+        
+        for category, category_keywords in categorized_keywords.items():
+            found_keywords = [k for k in keywords if any(ck in k.lower() for ck in category_keywords)]
+            if found_keywords:
+                summary_parts.append(f"{category}: {', '.join(found_keywords[:8])}")
+        
+        return '\n'.join(summary_parts)
+
+    def extract_keywords_from_text(self, text: str) -> List[str]:
+        """Extrai palavras-chave relevantes do texto"""
+        # Palavras importantes do domínio
+        domain_keywords = [
+            'alteração', 'cadastral', 'titular', 'documento', 'cpf', 'rg', 'nome',
+            'endereço', 'telefone', 'email', 'formulário', 'assinatura', 'prazo',
+            'sistema', 'zendesk', 'sisprev', 'procurador', 'curador', 'tutor'
+        ]
+        
+        found_keywords = []
+        text_lower = text.lower()
+        
+        for keyword in domain_keywords:
+            if keyword in text_lower:
+                found_keywords.append(keyword)
+        
+        # Adicionar palavras frequentes específicas
+        words = re.findall(r'\b[a-záéíóúçãõâêî]{4,}\b', text_lower)
+        word_freq = {}
+        for word in words:
+            if word not in ['para', 'com', 'são', 'está', 'ter', 'como', 'mais']:
+                word_freq[word] = word_freq.get(word, 0) + 1
+        
+        frequent_words = [word for word, freq in sorted(word_freq.items(), key=lambda x: x[1], reverse=True)[:10] if freq > 2]
+        found_keywords.extend(frequent_words)
+        
+        return list(set(found_keywords))
+
+    def extract_section_keywords(self, section: Dict[str, Any]) -> List[str]:
+        """Extrai palavras-chave específicas de uma seção"""
+        content = section['title'] + ' ' + ' '.join(section['content'])
+        return self.extract_keywords_from_text(content)
+
+    def extract_section_topics(self, section: Dict[str, Any]) -> List[str]:
+        """Extrai tópicos específicos de uma seção"""
+        title_lower = section['title'].lower()
+        
+        topic_mapping = {
+            'solicitantes': ['quem pode', 'titular', 'procurador'],
+            'documentos': ['documento', 'cpf', 'rg', 'identificação'],
+            'procedimentos': ['procedimento', 'como', 'processo'],
+            'prazos': ['prazo', 'tempo', 'dias'],
+            'alteracao_cadastral': ['alteração', 'cadastral', 'atualização']
+        }
+        
+        topics = []
+        for topic, keywords in topic_mapping.items():
+            if any(keyword in title_lower for keyword in keywords):
+                topics.append(topic)
+        
+        return topics
+
+    def generate_context_summary(self, content: str) -> str:
+        """Gera resumo contextual do conteúdo"""
+        lines = [l.strip() for l in content.split('\n') if l.strip()]
+        if not lines:
+            return "Conteúdo vazio"
+        
+        # Primeira linha significativa
+        first_line = lines[0] if lines else ""
+        
+        # Identificar pontos-chave
+        key_points = []
+        for line in lines:
+            if any(keyword in line.lower() for keyword in ['deve', 'necessário', 'obrigatório', 'importante']):
+                key_points.append(line[:100] + "..." if len(line) > 100 else line)
+        
+        summary = first_line[:100] + "..." if len(first_line) > 100 else first_line
+        if key_points:
+            summary += f" | Pontos-chave: {len(key_points)} itens"
+        
+        return summary
+
+    def optimize_chunks_for_retrieval(self, chunks: List[DocumentChunk]) -> List[DocumentChunk]:
+        """Otimiza chunks para melhor recuperação pelo RAG"""
+        logger.info("🔧 Otimizando chunks para recuperação...")
+        
+        optimized_chunks = []
+        
+        for chunk in chunks:
+            # Garantir que o texto tenha contexto suficiente
+            if len(chunk.text.strip()) < 50:
+                logger.warning(f"Chunk muito pequeno ignorado: {chunk.chunk_id}")
+                continue
+            
+            # Adicionar metadados de busca
+            chunk.metadata['search_keywords'] = ' '.join(chunk.metadata.get('keywords', []))
+            chunk.metadata['search_topics'] = ' '.join(chunk.metadata.get('topics', []))
+            
+            # Normalizar texto para busca
+            normalized_text = self.normalize_for_search(chunk.text)
+            chunk.metadata['normalized_content'] = normalized_text[:500]  # Primeiros 500 chars
+            
+            optimized_chunks.append(chunk)
+        
+        logger.info(f"🔧 Otimização concluída: {len(optimized_chunks)} chunks válidos")
+        return optimized_chunks
+
+    def normalize_for_search(self, text: str) -> str:
+        """Normaliza texto para melhor busca"""
+        # Remover caracteres especiais e normalizar
+        normalized = re.sub(r'[^\w\s]', ' ', text.lower())
+        normalized = re.sub(r'\s+', ' ', normalized)
+        return normalized.strip()
+
+    def calculate_coverage(self, chunks: List[DocumentChunk], original_text: str) -> float:
+        """Calcula a cobertura dos chunks em relação ao texto original"""
+        total_chunk_chars = sum(len(chunk.text) for chunk in chunks)
+        original_chars = len(original_text)
+        return (total_chunk_chars / original_chars) * 100 if original_chars > 0 else 0
+
+    def analyze_document_structure(self, text: str) -> List[Dict]:
+        """Analisa a estrutura lógica do documento e identifica seções"""
+        import re
+        
+        sections = []
+        lines = text.split('\n')
+        current_section = {
+            'title': 'Introdução',
+            'type': 'intro',
+            'content': '',
+            'topics': [],
+            'keywords': [],
+            'summary': ''
+        }
+        
+        title_patterns = [
+            r'^#{1,3}\s+(.+)',  # Markdown headers
+            r'^(\d+\.)\s+(.+)',  # Numbered sections
+            r'^([A-Z][^a-z]*):?\s*$',  # ALL CAPS titles
+            r'^(.+):\s*$',  # Title with colon
+            r'^([a-z]\))\s+(.+)',  # Letter enumeration
+        ]
+        
+        for line_num, line in enumerate(lines):
+            line = line.strip()
+            if not line:
+                continue
+            
+            # Detectar início de nova seção
+            is_new_section = False
+            section_title = ''
+            section_type = 'content'
+            
+            for pattern in title_patterns:
+                match = re.match(pattern, line, re.IGNORECASE)
+                if match:
+                    if pattern.startswith(r'^#{1,3}'):  # Markdown header
+                        section_title = match.group(1).strip()
+                        section_type = 'header'
+                    elif pattern.startswith(r'^(\d+\.)'):  # Numbered
+                        section_title = f"{match.group(1)} {match.group(2)}".strip()
+                        section_type = 'numbered'
+                    elif pattern.startswith(r'^([A-Z]'):  # ALL CAPS
+                        section_title = line.strip(':')
+                        section_type = 'emphasis'
+                    elif pattern.startswith(r'^(.+):'):  # With colon
+                        section_title = match.group(1).strip()
+                        section_type = 'topic'
+                    elif pattern.startswith(r'^([a-z]\))'):  # Letter enum
+                        section_title = f"{match.group(1)} {match.group(2)}".strip()
+                        section_type = 'enumeration'
+                    
+                    is_new_section = True
+                    break
+            
+            if is_new_section and current_section['content'].strip():
+                # Finalizar seção anterior
+                current_section['summary'] = self.generate_section_summary(current_section['content'])
+                current_section['keywords'] = self.extract_keywords(current_section['content'])
+                current_section['topics'] = self.extract_topics(current_section['content'])
+                sections.append(current_section)
+                
+                # Iniciar nova seção
+                current_section = {
+                    'title': section_title,
+                    'type': section_type,
+                    'content': line + '\n',
+                    'topics': [],
+                    'keywords': [],
+                    'summary': ''
+                }
+            else:
+                # Adicionar linha à seção atual
+                current_section['content'] += line + '\n'
+        
+        # Adicionar última seção
+        if current_section['content'].strip():
+            current_section['summary'] = self.generate_section_summary(current_section['content'])
+            current_section['keywords'] = self.extract_keywords(current_section['content'])
+            current_section['topics'] = self.extract_topics(current_section['content'])
+            sections.append(current_section)
+        
+        return sections
+
+    def split_large_section(self, section: Dict, filename: str, section_index: int) -> List[DocumentChunk]:
+        """Divide seções muito grandes mantendo contexto"""
+        content = section['content']
+        chunks = []
+        
+        # Dividir por parágrafos lógicos
+        paragraphs = content.split('\n\n')
+        current_chunk = ''
+        chunk_count = 0
+        
+        for para in paragraphs:
+            if len(current_chunk + para) > 1800:  # Limite menor para garantir contexto
+                if current_chunk.strip():
+                    # Criar chunk com contexto da seção
+                    chunk_id = f"{filename}_section_{section_index:03d}_part_{chunk_count:02d}"
+                    chunk = DocumentChunk(
+                        chunk_id=chunk_id,
+                        text=f"# {section['title']}\n\n{current_chunk.strip()}",
+                        embedding=[],
+                        metadata={
+                            'filename': filename,
+                            'section_title': section['title'],
+                            'section_type': section['type'],
+                            'section_index': section_index,
+                            'part_index': chunk_count,
+                            'is_continuation': chunk_count > 0,
+                            'topics': section['topics'],
+                            'keywords': self.extract_keywords(current_chunk),
+                            'context_summary': self.generate_section_summary(current_chunk)
+                        }
+                    )
+                    chunks.append(chunk)
+                    chunk_count += 1
+                    current_chunk = para + '\n\n'
+            else:
+                current_chunk += para + '\n\n'
+        
+        # Último chunk
+        if current_chunk.strip():
+            chunk_id = f"{filename}_section_{section_index:03d}_part_{chunk_count:02d}"
+            chunk = DocumentChunk(
+                chunk_id=chunk_id,
+                text=f"# {section['title']}\n\n{current_chunk.strip()}",
+                embedding=[],
+                metadata={
+                    'filename': filename,
+                    'section_title': section['title'],
+                    'section_type': section['type'],
+                    'section_index': section_index,
+                    'part_index': chunk_count,
+                    'is_continuation': chunk_count > 0,
+                    'topics': section['topics'],
+                    'keywords': self.extract_keywords(current_chunk),
+                    'context_summary': self.generate_section_summary(current_chunk)
+                }
+            )
+            chunks.append(chunk)
+        
+        return chunks
+
+    def generate_section_summary(self, content: str) -> str:
+        """Gera resumo inteligente da seção para facilitar busca"""
+        lines = content.strip().split('\n')
+        if not lines:
+            return ""
+        
+        # Pegar primeiras e últimas linhas significativas
+        significant_lines = [l.strip() for l in lines if l.strip() and len(l.strip()) > 10]
+        
+        if len(significant_lines) <= 3:
+            return ' '.join(significant_lines)
+        
+        # Resumo baseado em conteúdo
+        summary_parts = []
+        
+        # Primeira linha (geralmente título ou contexto)
+        if significant_lines:
+            summary_parts.append(significant_lines[0])
+        
+        # Identificar pontos-chave
+        keywords = ['necessário', 'obrigatório', 'deve', 'pode', 'não', 'sim', 'importante', 'atenção']
+        key_lines = []
+        for line in significant_lines[1:]:
+            if any(keyword in line.lower() for keyword in keywords):
+                key_lines.append(line)
+        
+        if key_lines:
+            summary_parts.extend(key_lines[:2])  # Máximo 2 linhas-chave
+        
+        return ' | '.join(summary_parts)
+
+    def extract_keywords(self, content: str) -> List[str]:
+        """Extrai palavras-chave relevantes para busca"""
+        import re
+        
+        # Palavras importantes do domínio ICATU
+        domain_keywords = [
+            'alteração', 'cadastral', 'cliente', 'documento', 'cpf', 'rg', 'nome',
+            'endereço', 'telefone', 'email', 'social', 'titular', 'apólice',
+            'formulário', 'assinatura', 'reconhecimento', 'firma', 'protocolo',
+            'prazo', 'dias', 'úteis', 'correio', 'envelope', 'caixa postal',
+            'sistema', 'qdrant', 'zendesk', 'sisprev', 'mumps', 'sisvida',
+            'receita federal', 'validação', 'autenticação', 'token', 'score',
+            'pendente', 'concluído', 'manifestação', 'solicitação', 'atualização'
+        ]
+        
+        found_keywords = []
+        content_lower = content.lower()
+        
+        for keyword in domain_keywords:
+            if keyword in content_lower:
+                found_keywords.append(keyword)
+        
+        # Adicionar palavras específicas do conteúdo
+        words = re.findall(r'\b[a-záéíóúçãõâêî]{4,}\b', content_lower)
+        word_freq = {}
+        for word in words:
+            if word not in ['para', 'como', 'deve', 'será', 'onde', 'pelo', 'pela', 'esta', 'este']:
+                word_freq[word] = word_freq.get(word, 0) + 1
+        
+        # Adicionar palavras mais frequentes
+        frequent_words = sorted(word_freq.items(), key=lambda x: x[1], reverse=True)[:5]
+        found_keywords.extend([word for word, freq in frequent_words if freq > 1])
+        
+        return list(set(found_keywords))
+
+    def extract_topics(self, content: str) -> List[str]:
+        """Extrai tópicos principais da seção"""
+        topics = []
+        
+        # Mapear conteúdo para tópicos
+        topic_mapping = {
+            'cpf': ['cpf', 'receita federal', 'validação'],
+            'documento': ['rg', 'documento', 'identificação', 'certidão'],
+            'nome': ['nome', 'social', 'alteração'],
+            'endereço': ['endereço', 'correspondência', 'residência'],
+            'telefone': ['telefone', 'celular', 'móvel'],
+            'email': ['email', 'eletrônico'],
+            'procedimento': ['formulário', 'assinatura', 'reconhecimento'],
+            'prazo': ['prazo', 'dias', 'úteis', 'horas'],
+            'sistema': ['sistema', 'zendesk', 'sisprev', 'mumps'],
+            'envio': ['correio', 'envelope', 'caixa postal'],
+            'solicitante': ['titular', 'procurador', 'curador', 'tutor'],
+            'validação': ['autenticação', 'token', 'score', 'rating']
+        }
+        
+        content_lower = content.lower()
+        for topic, keywords in topic_mapping.items():
+            if any(keyword in content_lower for keyword in keywords):
+                topics.append(topic)
+        
+        return topics
+
+    def advanced_text_cleaning(self, text: str) -> str:
+        """Limpeza básica de texto - mantida por compatibilidade"""
+        return self.advanced_text_cleaning_preserving_structure(text)
+        """Limpeza avançada de texto preservando estrutura e corrigindo encoding"""
+        if not text:
+            return ""
+        
+        logger.info("🧹 Starting advanced text cleaning...")
+        original_length = len(text)
+        
+        # 1. Normalização Unicode
+        import unicodedata
+        text = unicodedata.normalize('NFKC', text)
+        
+        # 2. Correção de problemas de encoding específicos do ICATU
+        encoding_fixes = {
+            # Problemas de UTF-8 mal decodificado
+            'Ã§': 'ç', 'Ã©': 'é', 'Ã¡': 'á', 'Ã­': 'í', 'Ã³': 'ó', 'Ãº': 'ú',
+            'Ã ': 'à', 'Ã¢': 'â', 'Ã´': 'ô', 'Ã¬': 'ì', 'Ã¹': 'ù', 'Ã': 'ã',
+            'Ã§': 'Ç', 'Ã‰': 'É', 'Ã': 'Á', 'Ã': 'Í', 'Ã"': 'Ó', 'Ãš': 'Ú',
+            
+            # Entidades HTML
+            '&amp;': '&', '&lt;': '<', '&gt;': '>', '&quot;': '"', '&#39;': "'",
+            
+            # Problemas específicos observados nos logs
+            'Alterao': 'Alteração', 'Capitalizao': 'Capitalização',
+            'aplice': 'apólice', 'necessrio': 'necessário',
+            'especfico': 'específico', 'endereo': 'endereço',
+            'telefone': 'telefone', 'informaes': 'informações',
+            'documentao': 'documentação', 'procedimento': 'procedimento',
+            'comunicaes': 'comunicações', 'reclamao': 'reclamação',
+            'implantao': 'implantação', 'validao': 'validação',
+            'identificao': 'identificação', 'manifestao': 'manifestação',
+            'atualizao': 'atualização', 'situao': 'situação',
+            'orientao': 'orientação', 'autenticao': 'autenticação',
+            'verificao': 'verificação'
+        }
+        
+        for wrong, correct in encoding_fixes.items():
+            text = text.replace(wrong, correct)
+        
+        # 3. Normalização de estrutura preservando títulos e listas
+        import re
+        
+        # Preservar quebras importantes em títulos
+        text = re.sub(r'\n\s*\n\s*\n+', '\n\n', text)  # Múltiplas quebras -> dupla
+        
+        # Conectar frases quebradas incorretamente
+        text = re.sub(r'([a-z,])\s*\n\s*([a-z])', r'\1 \2', text)
+        
+        # Preservar estrutura de listas
+        text = re.sub(r'\n\s*•\s*', '\n• ', text)
+        text = re.sub(r'\n\s*-\s*', '\n- ', text)
+        text = re.sub(r'\n\s*(\d+\.)\s*', r'\n\1 ', text)
+        text = re.sub(r'\n\s*([a-z]\))\s*', r'\n\1 ', text)
+        
+        # Garantir espaçamento correto em títulos
+        text = re.sub(r'\n(#{1,4}\s+)', r'\n\n\1', text)
+        
+        # Normalizar espaçamento
+        text = re.sub(r'[ \t]+', ' ', text)
+        text = re.sub(r'\n[ \t]+', '\n', text)
+        
+        # Remover caracteres de controle problemáticos
+        text = re.sub(r'[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]', '', text)
+        
+        text = text.strip()
+        
+        cleaned_length = len(text)
+        retention_pct = (cleaned_length/original_length)*100 if original_length > 0 else 0
+        logger.info(f"🧹 Text cleaning: {original_length} -> {cleaned_length} chars ({retention_pct:.1f}% retained)")
+        
+        return text
     
     def chunk_text(self, text: str, filename: str) -> List[DocumentChunk]:
         """
-        CHUNKING HIERÁRQUICO OTIMIZADO com DEBUGGING COMPLETO
+        CHUNKING INTELIGENTE BASEADO EM ESTRUTURA LÓGICA
         
-        ESTRATÉGIAS IMPLEMENTADAS:
-        1. 🎯 Chunks maiores (2048 tokens) para máximo contexto
-        2. 🔄 Overlap aumentado (512 tokens) para continuidade
-        3. 📊 Categorização automática ICATU
-        4. 🏗️ Preservação de estrutura hierárquica
-        5. 📝 Metadados ricos para busca otimizada
-        6. 🔍 Garantia de cobertura completa do documento
+        NOVA ESTRATÉGIA IMPLEMENTADA:
+        1. 🧠 Análise estrutural do documento (títulos, seções, tópicos)
+        2. 🧹 Limpeza avançada de texto e correção de encoding
+        3. � Chunking baseado em seções lógicas completas
+        4. 🏷️ Metadados ricos com keywords e sumários
+        5. � Facilitação da busca pelo MISTRAL
+        6. ✅ Preservação completa do contexto
         """
-        import re
-        from transformers import AutoTokenizer
-        
-        logger.info(f"🔍 CHUNKING DEBUG: Starting chunking for {filename}")
-        logger.info(f"📊 Input text length: {len(text)} characters")
+        logger.info(f"🧠 Starting intelligent structural chunking for {filename}")
+        logger.info(f"� Input text length: {len(text)} characters")
         logger.info(f"📄 Text preview: {text[:300]}...")
         
-        tokenizer = AutoTokenizer.from_pretrained(EMBEDDING_MODEL)
+        # Usar novo sistema de chunking estrutural
+        chunks = self.smart_structural_chunking(text, filename)
         
-        # Pré-processamento avançado do texto
+        if not chunks:
+            logger.warning("⚠️ Structural chunking failed, using fallback...")
+            # Fallback para método anterior se necessário
+            chunks = self.fallback_chunking(text, filename)
+        
+        logger.info(f"✅ Chunking complete: {len(chunks)} intelligent chunks created")
+        
+        return chunks
+
+    def fallback_chunking(self, text: str, filename: str) -> List[DocumentChunk]:
+        """Método de fallback se o chunking estrutural falhar"""
+        logger.info("� Using fallback chunking method")
+        
+        # Limpeza básica
+        clean_text = self.advanced_text_cleaning(text)
+        
+        # Divisão simples por parágrafos
+        paragraphs = [p.strip() for p in clean_text.split('\n\n') if p.strip()]
+        
+        chunks = []
+        current_chunk = ""
+        chunk_index = 0
+        
+        for para in paragraphs:
+            if len(current_chunk + para) > 1500:
+                if current_chunk.strip():
+                    chunk_id = f"{filename}_fallback_{chunk_index:03d}"
+                    chunk = DocumentChunk(
+                        chunk_id=chunk_id,
+                        text=current_chunk.strip(),
+                        embedding=[],
+                        metadata={
+                            'filename': filename,
+                            'chunk_index': chunk_index,
+                            'method': 'fallback',
+                            'keywords': self.extract_keywords(current_chunk),
+                            'topics': self.extract_topics(current_chunk)
+                        }
+                    )
+                    chunks.append(chunk)
+                    chunk_index += 1
+                    current_chunk = para + '\n\n'
+            else:
+                current_chunk += para + '\n\n'
+        
+        # Último chunk
+        if current_chunk.strip():
+            chunk_id = f"{filename}_fallback_{chunk_index:03d}"
+            chunk = DocumentChunk(
+                chunk_id=chunk_id,
+                text=current_chunk.strip(),
+                embedding=[],
+                metadata={
+                    'filename': filename,
+                    'chunk_index': chunk_index,
+                    'method': 'fallback',
+                    'keywords': self.extract_keywords(current_chunk),
+                    'topics': self.extract_topics(current_chunk)
+                }
+            )
+            chunks.append(chunk)
+        
+        return chunks
         original_length = len(text)
         text = preprocess_text_advanced(text)
         processed_length = len(text)
@@ -1745,8 +2665,11 @@ async def get_qdrant_statistics():
 async def test_qdrant_search(query: str = "seguro", limit: int = 5):
     """Test search functionality in Qdrant"""
     try:
+        # Verificar se o embedding service está inicializado
+        if not processor.embedding_service or not processor.embedding_service.model:
+            await processor.initialize()
+        
         # Gerar embedding da query
-        await processor.ensure_initialized()
         query_embedding = await processor.embedding_service.embed_texts([query])
         
         # Buscar no Qdrant
