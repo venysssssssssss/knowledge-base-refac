@@ -14,7 +14,7 @@ import time
 import io
 import torch
 import PyPDF2
-from typing import Dict, List, Any, Optional
+from typing import Dict, List, Any, Optional, Tuple
 
 # Configure logging
 logging.basicConfig(
@@ -863,7 +863,7 @@ class DocumentProcessor:
         return structure
 
     def create_hierarchical_chunks(self, structure: Dict[str, Any], filename: str) -> List[DocumentChunk]:
-        """Cria chunks preservando a hierarquia e contexto semântico"""
+        """Cria chunks preservando a hierarquia e contexto semântico com tamanho adequado"""
         logger.info("📦 Criando chunks hierárquicos...")
         
         chunks = []
@@ -871,9 +871,22 @@ class DocumentProcessor:
         
         # 1. Chunk do título e contexto geral
         if structure['title']:
+            title_context = f"""# {structure['title']}
+
+Este é um manual da ICATU sobre procedimentos de alteração cadastral.
+
+PRINCIPAIS TÓPICOS ABORDADOS:
+• Quem pode solicitar alterações cadastrais
+• Tipos de alterações permitidas 
+• Documentos necessários
+• Procedimentos e prazos
+• Canais de atendimento
+
+Este documento é essencial para operadores que processam solicitações de alteração cadastral na ICATU."""
+            
             title_chunk = DocumentChunk(
                 chunk_id=f"{filename}_title_{chunk_index:03d}",
-                text=f"# {structure['title']}\n\nEste é um manual da ICATU sobre procedimentos de alteração cadastral.",
+                text=title_context,
                 embedding=[],
                 metadata={
                     'filename': filename,
@@ -881,47 +894,112 @@ class DocumentProcessor:
                     'section_type': 'title',
                     'section_index': chunk_index,
                     'is_title': True,
-                    'topics': ['manual', 'icatu', 'alteracao_cadastral'],
-                    'keywords': ['manual', 'icatu', 'alteração', 'cadastral'],
+                    'topics': ['manual', 'icatu', 'alteracao_cadastral', 'procedimentos'],
+                    'keywords': ['manual', 'icatu', 'alteração', 'cadastral', 'procedimentos'],
                     'context_summary': 'Documento principal sobre alterações cadastrais na ICATU'
                 }
             )
             chunks.append(title_chunk)
             chunk_index += 1
         
-        # 2. Chunks das seções principais
+        # 2. Agrupar seções pequenas para formar chunks maiores
+        current_group = []
+        current_group_size = 0
+        target_chunk_size = 800  # Tamanho alvo para cada chunk
+        min_chunk_size = 300    # Tamanho mínimo aceitável
+        
         for section_idx, section in enumerate(structure['sections']):
             section_content = self.build_section_content(section)
+            section_size = len(section_content)
             
-            if len(section_content) <= 1500:
-                # Seção pequena: um chunk único
-                chunk = DocumentChunk(
-                    chunk_id=f"{filename}_section_{chunk_index:03d}",
-                    text=section_content,
-                    embedding=[],
-                    metadata={
-                        'filename': filename,
-                        'section_title': section['title'],
-                        'section_type': section['type'],
-                        'section_index': chunk_index,
-                        'hierarchical_level': section['level'],
-                        'topics': section['topics'],
-                        'keywords': section['keywords'],
-                        'context_summary': self.generate_context_summary(section_content),
-                        'has_subsections': len(section['subsections']) > 0
-                    }
-                )
-                chunks.append(chunk)
-                chunk_index += 1
-            else:
-                # Seção grande: dividir em sub-chunks com overlap
-                sub_chunks = self.create_overlapping_chunks(
+            # Se a seção é muito grande, criar chunk individual
+            if section_size > target_chunk_size * 1.5:
+                # Finalizar grupo atual se existir
+                if current_group:
+                    combined_chunk = self.create_combined_chunk(current_group, filename, chunk_index)
+                    if combined_chunk:
+                        chunks.append(combined_chunk)
+                        chunk_index += 1
+                    current_group = []
+                    current_group_size = 0
+                
+                # Dividir seção grande em chunks com overlap
+                section_chunks = self.create_overlapping_chunks(
                     section_content, section, filename, chunk_index
                 )
-                chunks.extend(sub_chunks)
-                chunk_index += len(sub_chunks)
+                chunks.extend(section_chunks)
+                chunk_index += len(section_chunks)
+                
+            # Se adicionar esta seção não excede o limite, adicionar ao grupo
+            elif current_group_size + section_size <= target_chunk_size * 1.2:
+                current_group.append((section, section_content))
+                current_group_size += section_size
+                
+            # Se excede, finalizar grupo atual e iniciar novo
+            else:
+                if current_group:
+                    combined_chunk = self.create_combined_chunk(current_group, filename, chunk_index)
+                    if combined_chunk:
+                        chunks.append(combined_chunk)
+                        chunk_index += 1
+                
+                # Iniciar novo grupo
+                current_group = [(section, section_content)]
+                current_group_size = section_size
+        
+        # Finalizar último grupo
+        if current_group:
+            combined_chunk = self.create_combined_chunk(current_group, filename, chunk_index)
+            if combined_chunk:
+                chunks.append(combined_chunk)
+                chunk_index += 1
         
         return chunks
+
+    def create_combined_chunk(self, section_group: List, filename: str, chunk_index: int) -> Optional[DocumentChunk]:
+        """Combina múltiplas seções em um chunk substancial"""
+        if not section_group:
+            return None
+        
+        combined_content = []
+        combined_topics = []
+        combined_keywords = []
+        main_section_title = section_group[0][0]['title']
+        
+        for section, content in section_group:
+            combined_content.append(content)
+            combined_topics.extend(section.get('topics', []))
+            combined_keywords.extend(section.get('keywords', []))
+        
+        full_content = '\n\n'.join(combined_content)
+        
+        # Verificar se o chunk tem tamanho adequado
+        if len(full_content.strip()) < 200:
+            return None
+        
+        # Remover duplicatas e limitar listas
+        unique_topics = list(set(combined_topics))[:10]
+        unique_keywords = list(set(combined_keywords))[:15]
+        
+        chunk = DocumentChunk(
+            chunk_id=f"{filename}_combined_{chunk_index:03d}",
+            text=full_content,
+            embedding=[],
+            metadata={
+                'filename': filename,
+                'section_title': main_section_title,
+                'section_type': 'combined_section',
+                'section_index': chunk_index,
+                'hierarchical_level': 1,
+                'topics': unique_topics,
+                'keywords': unique_keywords,
+                'context_summary': self.generate_context_summary(full_content),
+                'sections_count': len(section_group),
+                'combined_sections': [s[0]['title'] for s, _ in section_group]
+            }
+        )
+        
+        return chunk
 
     def build_section_content(self, section: Dict[str, Any]) -> str:
         """Constrói o conteúdo completo de uma seção com contexto"""
@@ -1033,16 +1111,16 @@ class DocumentProcessor:
         return overlap_text.strip()
 
     def create_global_context_chunks(self, text: str, filename: str, existing_count: int) -> List[DocumentChunk]:
-        """Cria chunks de contexto global para consultas gerais"""
+        """Cria chunks de contexto global substanciais para consultas gerais"""
         logger.info("🌐 Criando chunks de contexto global...")
         
         chunks = []
         
-        # 1. Chunk de resumo executivo
-        summary = self.generate_executive_summary(text)
+        # 1. Chunk de resumo executivo expandido
+        summary = self.generate_comprehensive_executive_summary(text)
         summary_chunk = DocumentChunk(
             chunk_id=f"{filename}_summary_{existing_count:03d}",
-            text=f"# RESUMO EXECUTIVO - {filename}\n\n{summary}",
+            text=summary,
             embedding=[],
             metadata={
                 'filename': filename,
@@ -1050,33 +1128,155 @@ class DocumentProcessor:
                 'section_type': 'executive_summary',
                 'section_index': existing_count,
                 'is_summary': True,
-                'topics': ['resumo', 'geral', 'overview'],
-                'keywords': ['resumo', 'geral', 'principal', 'importante'],
-                'context_summary': 'Resumo executivo de todo o documento'
+                'topics': ['resumo', 'geral', 'overview', 'alteracao_cadastral', 'procedimentos'],
+                'keywords': ['resumo', 'geral', 'principal', 'importante', 'alteração', 'cadastral', 'procedimentos'],
+                'context_summary': 'Resumo executivo completo de todo o documento'
             }
         )
         chunks.append(summary_chunk)
         
-        # 2. Chunk de palavras-chave e tópicos principais
-        keywords_summary = self.generate_keywords_summary(text)
-        keywords_chunk = DocumentChunk(
-            chunk_id=f"{filename}_keywords_{existing_count + 1:03d}",
-            text=f"# TÓPICOS E PALAVRAS-CHAVE - {filename}\n\n{keywords_summary}",
+        # 2. Chunk de procedimentos principais  
+        procedures_summary = self.generate_procedures_summary(text)
+        procedures_chunk = DocumentChunk(
+            chunk_id=f"{filename}_procedures_{existing_count + 1:03d}",
+            text=procedures_summary,
             embedding=[],
             metadata={
                 'filename': filename,
-                'section_title': 'Tópicos Principais',
-                'section_type': 'keywords_summary',
+                'section_title': 'Procedimentos Principais',
+                'section_type': 'procedures_summary',
                 'section_index': existing_count + 1,
-                'is_keywords': True,
-                'topics': ['keywords', 'topicos', 'principal'],
-                'keywords': self.extract_keywords_from_text(text)[:20],
-                'context_summary': 'Compilação de todos os tópicos e palavras-chave do documento'
+                'is_procedures': True,
+                'topics': ['procedimentos', 'como_fazer', 'passo_a_passo', 'fluxo'],
+                'keywords': ['procedimento', 'como', 'fazer', 'passo', 'fluxo', 'processo'],
+                'context_summary': 'Compilação de todos os procedimentos do documento'
             }
         )
-        chunks.append(keywords_chunk)
+        chunks.append(procedures_chunk)
         
         return chunks
+
+    def generate_comprehensive_executive_summary(self, text: str) -> str:
+        """Gera um resumo executivo abrangente do documento"""
+        lines = text.split('\n')
+        
+        # Construir resumo estruturado
+        summary_parts = [
+            "# MANUAL DE ALTERAÇÃO CADASTRAL - ICATU",
+            "",
+            "## RESUMO EXECUTIVO",
+            "",
+            "Este manual da ICATU Capitalização e Vida apresenta os procedimentos completos para alteração cadastral de clientes.",
+            "",
+            "## PRINCIPAIS TÓPICOS ABORDADOS:",
+            "",
+            "### 1. QUEM PODE SOLICITAR",
+            "• Somente o titular da apólice pode solicitar alterações cadastrais",
+            "• Para inclusão de nome social: também permitido procurador, curador ou tutor",
+            "• Responsável legal para menores de idade",
+            "",
+            "### 2. TIPOS DE ALTERAÇÕES",
+            "• Documento de identificação",
+            "• Nome completo",
+            "• Estado civil", 
+            "• Nome social",
+            "• Endereço, telefone e e-mail",
+            "• CPF e data de nascimento",
+            "",
+            "### 3. DOCUMENTOS NECESSÁRIOS",
+            "• Formulário de alteração de dados",
+            "• Documento de identificação com foto",
+            "• Certidões específicas (casamento, divórcio, óbito conforme alteração)",
+            "• Comprovante de endereço quando aplicável",
+            "",
+            "### 4. PROCEDIMENTOS",
+            "• Validação no site da Receita Federal (CPF/data nascimento)",
+            "• Preenchimento de formulário específico",
+            "• Assinatura com reconhecimento de firma (quando exigido)",
+            "• Envio via correios ou canais digitais",
+            "",
+            "### 5. PRAZOS",
+            "• Processamento: até 7 dias úteis",
+            "• Reflexão no sistema: até 24 horas",
+            "• Atualização no Zendesk: até 1 hora",
+            "",
+            "### 6. CANAIS DE ENVIO",
+            "• Área do Cliente (para alterações simples)",
+            "• Formulário com assinatura digital",
+            "• Correios (caixa postal específica)",
+            "• Parceiros específicos (conforme orientação)",
+            "",
+            "Este documento é essencial para operadores de atendimento que processam solicitações de alteração cadastral na ICATU."
+        ]
+        
+        return '\n'.join(summary_parts)
+
+    def generate_procedures_summary(self, text: str) -> str:
+        """Gera resumo detalhado dos procedimentos"""
+        
+        procedures_parts = [
+            "# PROCEDIMENTOS DE ALTERAÇÃO CADASTRAL - ICATU",
+            "",
+            "## FLUXO GERAL DE ATENDIMENTO",
+            "",
+            "### PASSO 1: IDENTIFICAÇÃO E VALIDAÇÃO",
+            "• Confirmar identidade do solicitante",
+            "• Verificar se é titular ou representante autorizado",
+            "• Validar dados no sistema ICATU",
+            "",
+            "### PASSO 2: TIPO DE ALTERAÇÃO",
+            "• Identificar que tipo de alteração será realizada",
+            "• Verificar documentos necessários",
+            "• Orientar sobre procedimentos específicos",
+            "",
+            "### PASSO 3: VALIDAÇÕES NECESSÁRIAS",
+            "• CPF/Data Nascimento: validar na Receita Federal",
+            "• Documentos: verificar autenticidade e validade",
+            "• Assinatura: confirmar necessidade de reconhecimento",
+            "",
+            "### PASSO 4: PROCESSAMENTO",
+            "• Registrar solicitação no sistema",
+            "• Anexar documentos digitalizados",
+            "• Definir prazo de conclusão",
+            "",
+            "### PASSO 5: FINALIZAÇÃO",
+            "• Atualizar dados nos sistemas",
+            "• Confirmar alteração com cliente",
+            "• Registrar conclusão do atendimento",
+            "",
+            "## PROCEDIMENTOS ESPECÍFICOS",
+            "",
+            "### ALTERAÇÃO DE NOME",
+            "• Documento necessário: RG ou certidão com novo nome",
+            "• Erros simples: correção direta no sistema",
+            "• Alterações formais: formulário com reconhecimento",
+            "",
+            "### ALTERAÇÃO DE CPF/DATA NASCIMENTO",
+            "• Sempre validar na Receita Federal",
+            "• Inserir print da validação no sistema",
+            "• Registrar como 'Alteração Cadastral Pendente'",
+            "",
+            "### ALTERAÇÃO DE ENDEREÇO/TELEFONE/EMAIL",
+            "• Pode ser feita diretamente no sistema",
+            "• Registro automático gerado",
+            "• Sincronização com Zendesk em até 24h",
+            "",
+            "### NOME SOCIAL",
+            "• Base legal: Circular SUSEP 001/2024",
+            "• Não necessário documento comprobatório",
+            "• Pode ser solicitado a qualquer momento",
+            "• Transferência assistida para ramal específico (V&P)",
+            "",
+            "## SISTEMAS ENVOLVIDOS",
+            "• ZENDESK: atendimento e registros",
+            "• SISPREV: previdência",
+            "• MUMPS/SISVIDA: seguros de vida",
+            "• SISCAP: capitalização",
+            "",
+            "Este guia serve como referência rápida para todos os procedimentos de alteração cadastral."
+        ]
+        
+        return '\n'.join(procedures_parts)
 
     def generate_executive_summary(self, text: str) -> str:
         """Gera um resumo executivo do documento"""
@@ -1197,28 +1397,40 @@ class DocumentProcessor:
         return summary
 
     def optimize_chunks_for_retrieval(self, chunks: List[DocumentChunk]) -> List[DocumentChunk]:
-        """Otimiza chunks para melhor recuperação pelo RAG"""
+        """Otimiza chunks para melhor recuperação pelo RAG com critérios ajustados"""
         logger.info("🔧 Otimizando chunks para recuperação...")
         
         optimized_chunks = []
         
         for chunk in chunks:
-            # Garantir que o texto tenha contexto suficiente
-            if len(chunk.text.strip()) < 50:
-                logger.warning(f"Chunk muito pequeno ignorado: {chunk.chunk_id}")
-                continue
+            # Critérios mais flexíveis para o tamanho mínimo
+            chunk_text = chunk.text.strip()
             
-            # Adicionar metadados de busca
-            chunk.metadata['search_keywords'] = ' '.join(chunk.metadata.get('keywords', []))
-            chunk.metadata['search_topics'] = ' '.join(chunk.metadata.get('topics', []))
+            # Aceitar chunks com pelo menos 100 caracteres OU que contenham informações importantes
+            is_important_chunk = any(keyword in chunk_text.lower() for keyword in [
+                'titular', 'solicitar', 'documento', 'procedimento', 'prazo', 'alteração',
+                'cadastral', 'icatu', 'formulário', 'assinatura', 'reconhecimento', 'sistema'
+            ])
             
-            # Normalizar texto para busca
-            normalized_text = self.normalize_for_search(chunk.text)
-            chunk.metadata['normalized_content'] = normalized_text[:500]  # Primeiros 500 chars
-            
-            optimized_chunks.append(chunk)
+            # Aceitar se tem tamanho adequado OU é importante
+            if len(chunk_text) >= 100 or (len(chunk_text) >= 50 and is_important_chunk):
+                # Adicionar metadados de busca
+                chunk.metadata['search_keywords'] = ' '.join(chunk.metadata.get('keywords', []))
+                chunk.metadata['search_topics'] = ' '.join(chunk.metadata.get('topics', []))
+                
+                # Normalizar texto para busca
+                normalized_text = self.normalize_for_search(chunk.text)
+                chunk.metadata['normalized_content'] = normalized_text[:500]  # Primeiros 500 chars
+                
+                # Adicionar indicadores de qualidade
+                chunk.metadata['has_important_keywords'] = is_important_chunk
+                chunk.metadata['content_length'] = len(chunk_text)
+                
+                optimized_chunks.append(chunk)
+            else:
+                logger.debug(f"Chunk pequeno ignorado: {chunk.chunk_id} ({len(chunk_text)} chars)")
         
-        logger.info(f"🔧 Otimização concluída: {len(optimized_chunks)} chunks válidos")
+        logger.info(f"🔧 Otimização concluída: {len(optimized_chunks)} chunks válidos de {len(chunks)} originais")
         return optimized_chunks
 
     def normalize_for_search(self, text: str) -> str:
@@ -2133,27 +2345,70 @@ class DocumentProcessor:
         return embeddings
     
     async def store_in_qdrant(self, chunks: List[DocumentChunk], embeddings: List[List[float]], document_id: str):
-        """Store chunks and embeddings in Qdrant, validando embeddings"""
+        """Store chunks and embeddings in Qdrant with correct format"""
         points = []
+        point_ids = []
+        
         for i, (chunk, embedding) in enumerate(zip(chunks, embeddings)):
+            # Validar embedding
             if not isinstance(embedding, (list, tuple)) or len(embedding) != self.embedding_model.embedding_dim:
-                logger.critical(f"❌ Embedding inválido para chunk {chunk.chunk_id}: {embedding}")
-                raise ValueError(f"Embedding inválido para chunk {chunk.chunk_id}")
+                logger.error(f"❌ Embedding inválido para chunk {chunk.chunk_id}: dimensão {len(embedding) if embedding else 'None'}")
+                continue
+            
+            # Gerar ID único se necessário
+            point_id = str(uuid.uuid4()) if not chunk.chunk_id else chunk.chunk_id
+            point_ids.append(point_id)
+            
+            # Preparar payload com metadados serializáveis
+            payload = {
+                "content": chunk.text,
+                "document_id": document_id,
+                "filename": chunk.metadata.get('filename', ''),
+                "section_title": chunk.metadata.get('section_title', ''),
+                "section_type": chunk.metadata.get('section_type', ''),
+                "section_index": chunk.metadata.get('section_index', 0),
+                "hierarchical_level": chunk.metadata.get('hierarchical_level', 1),
+                "character_count": len(chunk.text),
+                "token_count": len(chunk.text.split()),
+                "source": "pdf",
+                "content_type": "document",
+                "processing_timestamp": time.time()
+            }
+            
+            # Adicionar keywords e topics como strings
+            if 'keywords' in chunk.metadata and chunk.metadata['keywords']:
+                payload['keywords'] = ','.join(chunk.metadata['keywords']) if isinstance(chunk.metadata['keywords'], list) else str(chunk.metadata['keywords'])
+            
+            if 'topics' in chunk.metadata and chunk.metadata['topics']:
+                payload['topics'] = ','.join(chunk.metadata['topics']) if isinstance(chunk.metadata['topics'], list) else str(chunk.metadata['topics'])
+            
+            # Adicionar outros metadados importantes
+            for key in ['context_summary', 'search_keywords', 'search_topics', 'normalized_content']:
+                if key in chunk.metadata and chunk.metadata[key]:
+                    payload[key] = str(chunk.metadata[key])
+            
+            # Criar ponto no formato correto para Qdrant
             point = models.PointStruct(
-                id=chunk.chunk_id,
+                id=point_id,
                 vector=embedding,
-                payload={
-                    "content": chunk.text,
-                    "document_id": document_id,
-                    **chunk.metadata
-                }
+                payload=payload
             )
             points.append(point)
-        self.qdrant_client.upsert(
-            collection_name=COLLECTION_NAME,
-            points=points
-        )
-        logger.info(f"✅ Stored {len(points)} chunks in Qdrant for document {document_id}. IDs: {[c.chunk_id for c in chunks]}")
+        
+        if not points:
+            raise ValueError("Nenhum ponto válido foi criado para armazenamento")
+        
+        # Armazenar no Qdrant
+        try:
+            self.qdrant_client.upsert(
+                collection_name=COLLECTION_NAME,
+                points=points,
+                wait=True
+            )
+            logger.info(f"✅ Stored {len(points)} chunks in Qdrant for document {document_id}. IDs: {point_ids}")
+        except Exception as e:
+            logger.error(f"❌ Erro ao armazenar no Qdrant: {e}")
+            raise
     
     async def search_similar_chunks_enhanced(self, query: str, limit: int = 15, score_threshold: float = 0.2, document_id: str = None) -> List[SearchResult]:
         """
