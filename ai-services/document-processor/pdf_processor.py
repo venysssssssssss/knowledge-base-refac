@@ -1548,6 +1548,292 @@ async def debug_text_extraction(document_hash: str):
     # Note: This would require storing original PDFs or re-uploading for debug
     return {"message": "Upload a PDF with ?debug=true to see text extraction details"}
 
+@app.get("/qdrant/info")
+async def get_qdrant_info():
+    """Get comprehensive information about the Qdrant database"""
+    try:
+        # Informações gerais do Qdrant
+        collections = processor.qdrant_client.get_collections()
+        
+        # Informações detalhadas da collection principal
+        try:
+            collection_info = processor.qdrant_client.get_collection(COLLECTION_NAME)
+            collection_exists = True
+        except Exception:
+            collection_info = None
+            collection_exists = False
+        
+        # Estatísticas básicas
+        total_points = 0
+        if collection_exists:
+            try:
+                count_result = processor.qdrant_client.count(collection_name=COLLECTION_NAME)
+                total_points = count_result.count
+            except Exception as e:
+                logger.warning(f"Could not count points: {e}")
+        
+        return {
+            "qdrant_url": QDRANT_URL,
+            "collection_name": COLLECTION_NAME,
+            "collection_exists": collection_exists,
+            "total_collections": len(collections.collections),
+            "collections": [col.name for col in collections.collections],
+            "total_points": total_points,
+            "collection_info": {
+                "status": collection_info.status if collection_info else "Not found",
+                "vector_size": collection_info.config.params.vectors.size if collection_info else None,
+                "distance": collection_info.config.params.vectors.distance if collection_info else None
+            } if collection_info else None
+        }
+    except Exception as e:
+        logger.error(f"Error getting Qdrant info: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to get Qdrant info: {str(e)}")
+
+@app.get("/qdrant/documents")
+async def get_all_documents():
+    """Get all documents stored in Qdrant with statistics"""
+    try:
+        # Buscar todos os pontos
+        all_points = []
+        next_page_offset = None
+        
+        while True:
+            scroll_result = processor.qdrant_client.scroll(
+                collection_name=COLLECTION_NAME,
+                limit=100,
+                offset=next_page_offset,
+                with_payload=True,
+                with_vectors=False
+            )
+            
+            points, next_page_offset = scroll_result
+            all_points.extend(points)
+            
+            if next_page_offset is None:
+                break
+        
+        # Agrupar por documento
+        documents = {}
+        for point in all_points:
+            doc_id = point.payload.get("document_id", "unknown")
+            filename = point.payload.get("filename", "unknown")
+            
+            if doc_id not in documents:
+                documents[doc_id] = {
+                    "document_id": doc_id,
+                    "filename": filename,
+                    "chunks": [],
+                    "total_chunks": 0,
+                    "total_characters": 0,
+                    "categories": set(),
+                    "sections": set()
+                }
+            
+            # Adicionar chunk
+            chunk_info = {
+                "chunk_id": point.id,
+                "content_length": len(point.payload.get("content", "")),
+                "content_preview": point.payload.get("content", "")[:100] + "..." if len(point.payload.get("content", "")) > 100 else point.payload.get("content", ""),
+                "categories": point.payload.get("categories", []),
+                "section": point.payload.get("section", ""),
+                "chunk_index": point.payload.get("chunk_index", 0),
+                "token_count": point.payload.get("token_count", 0)
+            }
+            
+            documents[doc_id]["chunks"].append(chunk_info)
+            documents[doc_id]["total_chunks"] += 1
+            documents[doc_id]["total_characters"] += len(point.payload.get("content", ""))
+            documents[doc_id]["categories"].update(point.payload.get("categories", []))
+            documents[doc_id]["sections"].add(point.payload.get("section", ""))
+        
+        # Converter sets para lists para JSON
+        for doc in documents.values():
+            doc["categories"] = list(doc["categories"])
+            doc["sections"] = list(doc["sections"])
+            doc["chunks"].sort(key=lambda x: x.get("chunk_index", 0))
+        
+        return {
+            "total_documents": len(documents),
+            "total_chunks": len(all_points),
+            "documents": list(documents.values())
+        }
+        
+    except Exception as e:
+        logger.error(f"Error getting all documents: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to get documents: {str(e)}")
+
+@app.get("/qdrant/stats")
+async def get_qdrant_statistics():
+    """Get detailed statistics about the knowledge base"""
+    try:
+        # Buscar todos os pontos com payload
+        all_points = []
+        next_page_offset = None
+        
+        while True:
+            scroll_result = processor.qdrant_client.scroll(
+                collection_name=COLLECTION_NAME,
+                limit=100,
+                offset=next_page_offset,
+                with_payload=True,
+                with_vectors=False
+            )
+            
+            points, next_page_offset = scroll_result
+            all_points.extend(points)
+            
+            if next_page_offset is None:
+                break
+        
+        # Calcular estatísticas
+        stats = {
+            "total_chunks": len(all_points),
+            "total_documents": len(set(p.payload.get("document_id", "") for p in all_points)),
+            "total_characters": sum(len(p.payload.get("content", "")) for p in all_points),
+            "average_chunk_size": 0,
+            "categories": {},
+            "sections": {},
+            "document_breakdown": {},
+            "chunk_size_distribution": {
+                "small (0-500)": 0,
+                "medium (500-1500)": 0,
+                "large (1500+)": 0
+            }
+        }
+        
+        if stats["total_chunks"] > 0:
+            stats["average_chunk_size"] = stats["total_characters"] // stats["total_chunks"]
+        
+        # Analisar cada ponto
+        for point in all_points:
+            # Categorias
+            for cat in point.payload.get("categories", []):
+                stats["categories"][cat] = stats["categories"].get(cat, 0) + 1
+            
+            # Seções
+            section = point.payload.get("section", "unknown")
+            stats["sections"][section] = stats["sections"].get(section, 0) + 1
+            
+            # Documentos
+            doc_id = point.payload.get("document_id", "unknown")
+            filename = point.payload.get("filename", "unknown")
+            if doc_id not in stats["document_breakdown"]:
+                stats["document_breakdown"][doc_id] = {
+                    "filename": filename,
+                    "chunks": 0,
+                    "characters": 0
+                }
+            stats["document_breakdown"][doc_id]["chunks"] += 1
+            stats["document_breakdown"][doc_id]["characters"] += len(point.payload.get("content", ""))
+            
+            # Distribuição de tamanhos
+            content_length = len(point.payload.get("content", ""))
+            if content_length < 500:
+                stats["chunk_size_distribution"]["small (0-500)"] += 1
+            elif content_length < 1500:
+                stats["chunk_size_distribution"]["medium (500-1500)"] += 1
+            else:
+                stats["chunk_size_distribution"]["large (1500+)"] += 1
+        
+        return stats
+        
+    except Exception as e:
+        logger.error(f"Error getting Qdrant statistics: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to get statistics: {str(e)}")
+
+@app.get("/qdrant/search-test")
+async def test_qdrant_search(query: str = "seguro", limit: int = 5):
+    """Test search functionality in Qdrant"""
+    try:
+        # Gerar embedding da query
+        await processor.ensure_initialized()
+        query_embedding = await processor.embedding_service.embed_texts([query])
+        
+        # Buscar no Qdrant
+        search_results = processor.qdrant_client.search(
+            collection_name=COLLECTION_NAME,
+            query_vector=query_embedding[0],
+            limit=limit,
+            with_payload=True,
+            with_vectors=False
+        )
+        
+        results = []
+        for result in search_results:
+            results.append({
+                "score": result.score,
+                "chunk_id": result.id,
+                "content_preview": result.payload.get("content", "")[:200] + "..." if len(result.payload.get("content", "")) > 200 else result.payload.get("content", ""),
+                "categories": result.payload.get("categories", []),
+                "section": result.payload.get("section", ""),
+                "filename": result.payload.get("filename", ""),
+                "document_id": result.payload.get("document_id", "")
+            })
+        
+        return {
+            "query": query,
+            "total_results": len(results),
+            "results": results
+        }
+        
+    except Exception as e:
+        logger.error(f"Error testing search: {e}")
+        raise HTTPException(status_code=500, detail=f"Search test failed: {str(e)}")
+
+@app.delete("/qdrant/clear")
+async def clear_qdrant_collection():
+    """Clear all data from the Qdrant collection (CAUTION!)"""
+    try:
+        # Deletar a collection
+        processor.qdrant_client.delete_collection(COLLECTION_NAME)
+        
+        # Recriar a collection
+        await processor.ensure_collection_exists()
+        
+        return {
+            "message": f"Collection {COLLECTION_NAME} cleared and recreated successfully",
+            "status": "success"
+        }
+        
+    except Exception as e:
+        logger.error(f"Error clearing collection: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to clear collection: {str(e)}")
+
+@app.get("/qdrant/raw-points")
+async def get_raw_points(limit: int = 10, offset: int = 0):
+    """Get raw points from Qdrant for detailed inspection"""
+    try:
+        scroll_result = processor.qdrant_client.scroll(
+            collection_name=COLLECTION_NAME,
+            limit=limit,
+            offset=offset if offset > 0 else None,
+            with_payload=True,
+            with_vectors=True  # Include vectors for complete view
+        )
+        
+        points, next_offset = scroll_result
+        
+        raw_points = []
+        for point in points:
+            raw_points.append({
+                "id": point.id,
+                "vector_size": len(point.vector) if point.vector else 0,
+                "vector_preview": point.vector[:5] if point.vector else None,  # First 5 dimensions
+                "payload": point.payload
+            })
+        
+        return {
+            "limit": limit,
+            "offset": offset,
+            "next_offset": next_offset,
+            "total_returned": len(raw_points),
+            "points": raw_points
+        }
+        
+    except Exception as e:
+        logger.error(f"Error getting raw points: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to get raw points: {str(e)}")
+
 @app.post("/upload-pdf-debug", response_model=Dict[str, Any])
 async def upload_pdf_debug(file: UploadFile = File(...)):
     """Upload PDF with detailed debugging information"""
