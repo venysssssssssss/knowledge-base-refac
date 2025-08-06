@@ -141,7 +141,7 @@ from pdfminer.high_level import extract_text
 from PIL import Image
 from pydantic import BaseModel
 from qdrant_client import QdrantClient, models
-from qdrant_client.models import Distance, PointStruct, VectorParams
+from qdrant_client.models import Distance, PointStruct, VectorParams, Batch
 from sentence_transformers import SentenceTransformer
 from transformers import AutoModel, AutoTokenizer
 
@@ -2986,13 +2986,12 @@ Este documento é essencial para operadores que processam solicitações de alte
         try:
             logger.info(f"📤 Enviando {len(points)} pontos para Qdrant...")
             
-            # Criar pontos no formato PointStruct correto diretamente
-            from qdrant_client.models import PointStruct
+            # Usar formato direto sem PointStruct - compatível com todas as versões do Qdrant
             qdrant_points = []
             
             for point in points:
                 try:
-                    # Validar e limpar dados antes de criar PointStruct
+                    # Validar e limpar dados antes de criar o ponto
                     point_id = str(point["id"])
                     vector = point["vector"]
                     payload = point["payload"]
@@ -3004,40 +3003,38 @@ Este documento é essencial para operadores que processam solicitações de alte
                     
                     # Garantir que todos os valores do vector são float válidos
                     try:
-                        clean_vector = [float(x) for x in vector]
-                        # Verificar se há valores inválidos
-                        if any(not isinstance(x, (int, float)) or x != x or x == float('inf') or x == float('-inf') for x in clean_vector):
-                            logger.error(f"❌ Vector contém valores NaN/Inf para {point_id}")
-                            continue
+                        clean_vector = []
+                        for val in vector:
+                            if isinstance(val, (int, float)) and val == val and val != float('inf') and val != float('-inf'):
+                                clean_vector.append(float(val))
+                            else:
+                                clean_vector.append(0.0)
                         vector = clean_vector
                     except (ValueError, TypeError) as ve:
                         logger.error(f"❌ Erro ao converter vector para float em {point_id}: {ve}")
                         continue
                     
-                    # Validação final do payload (remover valores None/inválidos)
+                    # Limpar o payload para ser JSON-serializável
                     clean_payload = {}
                     for key, value in payload.items():
                         if value is not None:
-                            # Converter valores complexos para strings simples
-                            if isinstance(value, (list, dict)):
-                                clean_payload[key] = str(value)
-                            elif isinstance(value, (int, float)):
-                                # Verificar se é um número válido
-                                if value == value and value != float('inf') and value != float('-inf'):
-                                    clean_payload[key] = value
+                            if isinstance(value, (str, int, float, bool)):
+                                clean_payload[key] = value
+                            elif isinstance(value, list):
+                                # Converter listas para strings
+                                if all(isinstance(item, (str, int, float)) for item in value):
+                                    clean_payload[key] = ','.join(str(item) for item in value)
                                 else:
                                     clean_payload[key] = str(value)
-                            elif isinstance(value, (str, bool)):
-                                clean_payload[key] = value
                             else:
                                 clean_payload[key] = str(value)
                     
-                    # Criar PointStruct com dados completamente limpos
-                    qdrant_point = PointStruct(
-                        id=point_id,
-                        vector=vector,
-                        payload=clean_payload
-                    )
+                    # Criar ponto no formato dict simples (mais compatível)
+                    qdrant_point = {
+                        "id": point_id,
+                        "vector": vector,
+                        "payload": clean_payload
+                    }
                     qdrant_points.append(qdrant_point)
                     
                 except Exception as pe:
@@ -3049,39 +3046,89 @@ Este documento é essencial para operadores que processam solicitações de alte
             
             logger.info(f"📦 Processados {len(qdrant_points)} pontos válidos de {len(points)} originais")
             
-            # Usar batch upsert para melhor performance e compatibilidade
+            # Usar método direto mais simples para máxima compatibilidade
             try:
+                # NOVO: Usar formato Batch como descoberto na API
+                logger.info("🔄 Usando formato Batch para Qdrant...")
+                
+                # Preparar listas para Batch
+                batch_ids = []
+                batch_vectors = []
+                batch_payloads = []
+                
+                for point_data in qdrant_points:
+                    batch_ids.append(point_data["id"])
+                    batch_vectors.append(point_data["vector"])
+                    batch_payloads.append(point_data["payload"])
+                
+                # Usar Batch format
                 result = self.qdrant_client.upsert(
                     collection_name=COLLECTION_NAME,
-                    points=qdrant_points,
+                    points=Batch(
+                        ids=batch_ids,
+                        vectors=batch_vectors,
+                        payloads=batch_payloads
+                    ),
                     wait=True
                 )
+                
             except Exception as upsert_error:
-                logger.error(f"❌ Erro no upsert: {upsert_error}")
-                # Tentar inserir um por vez para identificar o problema
-                logger.info("🔄 Tentando inserção individual para debug...")
-                successful_points = 0
-                for i, point in enumerate(qdrant_points[:3]):  # Testar apenas os primeiros 3
+                logger.error(f"❌ Erro no upsert normal: {upsert_error}")
+                # Fallback: enviar em lotes menores
+                logger.info("🔄 Tentando envio em lotes menores...")
+                
+                batch_size = 5
+                successful_batches = 0
+                total_success = 0
+                
+                for i in range(0, len(qdrant_points), batch_size):
+                    batch = qdrant_points[i:i + batch_size]
                     try:
-                        single_result = self.qdrant_client.upsert(
+                        batch_structs = []
+                        for point_data in batch:
+                            point_struct = PointStruct(
+                                id=point_data["id"],
+                                vector=point_data["vector"],
+                                payload=point_data["payload"]
+                            )
+                            batch_structs.append(point_struct)
+                        
+                        batch_result = self.qdrant_client.upsert(
                             collection_name=COLLECTION_NAME,
-                            points=[point],
+                            points=batch_structs,
                             wait=True
                         )
-                        successful_points += 1
-                        logger.info(f"✅ Ponto {i} inserido com sucesso: {point.id}")
-                    except Exception as single_error:
-                        logger.error(f"❌ Erro no ponto {i} ({point.id}): {single_error}")
-                        logger.error(f"   - Vector type: {type(point.vector)}")
-                        logger.error(f"   - Vector len: {len(point.vector)}")
-                        logger.error(f"   - Payload keys: {list(point.payload.keys())}")
-                        break
+                        successful_batches += 1
+                        total_success += len(batch)
+                        logger.info(f"✅ Lote {successful_batches} enviado: {len(batch)} pontos")
+                        
+                    except Exception as batch_error:
+                        logger.error(f"❌ Erro no lote {i//batch_size + 1}: {batch_error}")
+                        
+                        # Tentar envio individual neste lote
+                        for point_data in batch:
+                            try:
+                                single_point = PointStruct(
+                                    id=point_data["id"],
+                                    vector=point_data["vector"],
+                                    payload=point_data["payload"]
+                                )
+                                single_result = self.qdrant_client.upsert(
+                                    collection_name=COLLECTION_NAME,
+                                    points=[single_point],
+                                    wait=True
+                                )
+                                total_success += 1
+                                logger.info(f"✅ Ponto individual: {point_data['id']}")
+                            except Exception as single_error:
+                                logger.error(f"❌ Falha individual {point_data['id']}: {single_error}")
+                                break  # Para na primeira falha para debug
                 
-                if successful_points == 0:
-                    raise upsert_error
+                if total_success > 0:
+                    logger.info(f"✅ Total inserido com sucesso: {total_success}/{len(qdrant_points)}")
+                    result = {"status": "partial_success", "successful_points": total_success}
                 else:
-                    logger.warning(f"⚠️ Apenas {successful_points} pontos foram inseridos com sucesso")
-                    return {"status": "partial_success", "successful_points": successful_points}
+                    raise Exception("Nenhum ponto foi inserido com sucesso")
             
             logger.info(f'✅ Armazenados {len(qdrant_points)} chunks no Qdrant para documento {document_id}')
             logger.info(f'📋 IDs dos pontos: {point_ids[:5]}{"..." if len(point_ids) > 5 else ""}')
