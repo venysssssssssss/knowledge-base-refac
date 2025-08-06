@@ -233,6 +233,8 @@ class EmbeddingService:
             # Converter para formato correto
             if isinstance(embeddings, np.ndarray):
                 embeddings_list = embeddings.tolist()
+            elif hasattr(embeddings, 'tolist'):
+                embeddings_list = embeddings.tolist()
             else:
                 embeddings_list = embeddings
 
@@ -250,7 +252,7 @@ class EmbeddingService:
                     try:
                         emb = [float(x) for x in emb]
                         # Verificar valores inválidos (NaN, inf)
-                        if any(not (isinstance(x, (int, float)) and -1000 < x < 1000) for x in emb):
+                        if any(not (isinstance(x, (int, float)) and -1000 < x < 1000 and x == x and x != float('inf') and x != float('-inf')) for x in emb):
                             logger.warning(f'⚠️ Embedding {i} contém valores inválidos')
                             emb = self._fallback_embedding(processed_texts[i])
                     except (ValueError, TypeError):
@@ -2942,7 +2944,30 @@ Este documento é essencial para operadores que processam solicitações de alte
 
             # Criar ponto no formato correto para Qdrant
             try:
-                # Usar o formato de dict simples ao invés de PointStruct
+                # Verificar se o embedding está correto antes de criar o ponto
+                if not isinstance(embedding, list):
+                    logger.error(f"❌ Embedding não é lista para {chunk.chunk_id}: {type(embedding)}")
+                    continue
+                
+                if len(embedding) != self.embedding_model.embedding_dim:
+                    logger.error(f"❌ Dimensão incorreta para {chunk.chunk_id}: {len(embedding)} vs {self.embedding_model.embedding_dim}")
+                    continue
+                
+                # Verificar se todos os valores são float válidos
+                try:
+                    clean_embedding = []
+                    for j, val in enumerate(embedding):
+                        if isinstance(val, (int, float)) and val == val and val != float('inf') and val != float('-inf'):
+                            clean_embedding.append(float(val))
+                        else:
+                            logger.warning(f"⚠️ Valor inválido no embedding {chunk.chunk_id}[{j}]: {val}")
+                            clean_embedding.append(0.0)
+                    embedding = clean_embedding
+                except Exception as val_error:
+                    logger.error(f"❌ Erro ao validar valores do embedding {chunk.chunk_id}: {val_error}")
+                    continue
+
+                # Usar o formato de dict simples para o ponto
                 point = {
                     "id": point_id,
                     "vector": embedding,
@@ -2961,7 +2986,7 @@ Este documento é essencial para operadores que processam solicitações de alte
         try:
             logger.info(f"📤 Enviando {len(points)} pontos para Qdrant...")
             
-            # Converter pontos para o formato PointStruct do Qdrant
+            # Criar pontos no formato PointStruct correto diretamente
             from qdrant_client.models import PointStruct
             qdrant_points = []
             
@@ -2977,19 +3002,37 @@ Este documento é essencial para operadores que processam solicitações de alte
                         logger.error(f"❌ Vector inválido para {point_id}: {type(vector)}, len={len(vector) if hasattr(vector, '__len__') else 'N/A'}")
                         continue
                     
+                    # Garantir que todos os valores do vector são float válidos
+                    try:
+                        clean_vector = [float(x) for x in vector]
+                        # Verificar se há valores inválidos
+                        if any(not isinstance(x, (int, float)) or x != x or x == float('inf') or x == float('-inf') for x in clean_vector):
+                            logger.error(f"❌ Vector contém valores NaN/Inf para {point_id}")
+                            continue
+                        vector = clean_vector
+                    except (ValueError, TypeError) as ve:
+                        logger.error(f"❌ Erro ao converter vector para float em {point_id}: {ve}")
+                        continue
+                    
                     # Validação final do payload (remover valores None/inválidos)
                     clean_payload = {}
                     for key, value in payload.items():
                         if value is not None:
-                            # Converter valores complexos para strings
+                            # Converter valores complexos para strings simples
                             if isinstance(value, (list, dict)):
                                 clean_payload[key] = str(value)
-                            elif isinstance(value, (int, float, str, bool)):
+                            elif isinstance(value, (int, float)):
+                                # Verificar se é um número válido
+                                if value == value and value != float('inf') and value != float('-inf'):
+                                    clean_payload[key] = value
+                                else:
+                                    clean_payload[key] = str(value)
+                            elif isinstance(value, (str, bool)):
                                 clean_payload[key] = value
                             else:
                                 clean_payload[key] = str(value)
                     
-                    # Criar PointStruct com dados limpos
+                    # Criar PointStruct com dados completamente limpos
                     qdrant_point = PointStruct(
                         id=point_id,
                         vector=vector,
@@ -3006,12 +3049,39 @@ Este documento é essencial para operadores que processam solicitações de alte
             
             logger.info(f"📦 Processados {len(qdrant_points)} pontos válidos de {len(points)} originais")
             
-            # Enviar para Qdrant usando a sintaxe correta
-            result = self.qdrant_client.upsert(
-                collection_name=COLLECTION_NAME,
-                points=qdrant_points,
-                wait=True
-            )
+            # Usar batch upsert para melhor performance e compatibilidade
+            try:
+                result = self.qdrant_client.upsert(
+                    collection_name=COLLECTION_NAME,
+                    points=qdrant_points,
+                    wait=True
+                )
+            except Exception as upsert_error:
+                logger.error(f"❌ Erro no upsert: {upsert_error}")
+                # Tentar inserir um por vez para identificar o problema
+                logger.info("🔄 Tentando inserção individual para debug...")
+                successful_points = 0
+                for i, point in enumerate(qdrant_points[:3]):  # Testar apenas os primeiros 3
+                    try:
+                        single_result = self.qdrant_client.upsert(
+                            collection_name=COLLECTION_NAME,
+                            points=[point],
+                            wait=True
+                        )
+                        successful_points += 1
+                        logger.info(f"✅ Ponto {i} inserido com sucesso: {point.id}")
+                    except Exception as single_error:
+                        logger.error(f"❌ Erro no ponto {i} ({point.id}): {single_error}")
+                        logger.error(f"   - Vector type: {type(point.vector)}")
+                        logger.error(f"   - Vector len: {len(point.vector)}")
+                        logger.error(f"   - Payload keys: {list(point.payload.keys())}")
+                        break
+                
+                if successful_points == 0:
+                    raise upsert_error
+                else:
+                    logger.warning(f"⚠️ Apenas {successful_points} pontos foram inseridos com sucesso")
+                    return {"status": "partial_success", "successful_points": successful_points}
             
             logger.info(f'✅ Armazenados {len(qdrant_points)} chunks no Qdrant para documento {document_id}')
             logger.info(f'📋 IDs dos pontos: {point_ids[:5]}{"..." if len(point_ids) > 5 else ""}')
