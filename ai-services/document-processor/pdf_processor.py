@@ -3056,28 +3056,32 @@ Este documento é essencial para operadores que processam solicitações de alte
                 batch_vectors = []
                 batch_payloads = []
                 
-                for i, point_data in enumerate(qdrant_points):
-                    # Gerar ID inteiro único baseado no hash do chunk_id
+                # Converter IDs para UUIDs válidos e usar formato correto
+                import uuid
+                corrected_points = []
+                
+                for point_data in qdrant_points:
+                    # Gerar UUID válido baseado no chunk_id
                     chunk_id_str = point_data["id"]
-                    # Usar hash para gerar ID inteiro único
-                    import hashlib
-                    hash_int = int(hashlib.md5(chunk_id_str.encode()).hexdigest()[:8], 16)
+                    # Criar UUID determinístico baseado no chunk_id
+                    uuid_namespace = uuid.UUID('12345678-1234-5678-1234-123456789012')
+                    point_uuid = str(uuid.uuid5(uuid_namespace, chunk_id_str))
                     
-                    batch_ids.append(hash_int)
-                    batch_vectors.append(point_data["vector"])
-                    batch_payloads.append(point_data["payload"])
+                    corrected_points.append({
+                        "id": point_uuid,
+                        "vector": point_data["vector"],
+                        "payload": point_data["payload"]
+                    })
                 
                 # Usar formato correto descoberto
                 upsert_data = {
-                    "ids": batch_ids,
-                    "vectors": batch_vectors,
-                    "payloads": batch_payloads
+                    "points": corrected_points
                 }
                 
-                # Fazer requisição direta HTTP pois o cliente Python pode estar usando formato antigo
+                # Fazer requisição direta HTTP com formato correto
                 async with httpx.AsyncClient() as client:
-                    response = await client.post(
-                        f"{QDRANT_URL}/collections/{COLLECTION_NAME}/points?wait=true",
+                    response = await client.put(
+                        f"{QDRANT_URL}/collections/{COLLECTION_NAME}/points",
                         json=upsert_data,
                         headers={"Content-Type": "application/json"}
                     )
