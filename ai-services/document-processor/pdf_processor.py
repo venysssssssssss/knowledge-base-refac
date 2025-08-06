@@ -843,97 +843,322 @@ class DocumentProcessor:
         self, text: str, filename: str
     ) -> List[DocumentChunk]:
         """
-        Chunking inteligente otimizado para preservar TODO o contexto do documento
-        Estratégia: Divisão semântica com overlap inteligente e estrutura hierárquica
+        Chunking inteligente baseado na estrutura do documento ICATU
+        Extrai seções por números (1., 2., etc.) e títulos específicos (Objetivo, etc.)
         """
-        logger.info(
-            f'🧠 Iniciando chunking estrutural inteligente para {filename}'
-        )
+        logger.info(f'🧠 Iniciando chunking estrutural inteligente para {filename}')
         logger.info(f'📊 Tamanho do texto de entrada: {len(text)} caracteres')
         
-        # Log do texto completo para debug
-        logger.info("=" * 80)
-        logger.info("TEXTO COMPLETO EXTRAÍDO:")
-        logger.info("=" * 80)
-        logger.info(text)
-        logger.info("=" * 80)
-
         try:
-            # 1. Limpeza e normalização avançada preservando estrutura
+            # 1. Limpeza básica preservando estrutura
             logger.info("🧹 Iniciando limpeza estrutural...")
-            clean_text = self.advanced_text_cleaning_preserving_structure(text)
+            clean_text = self.clean_text_preserving_structure(text)
             logger.info(f'🧹 Após limpeza estrutural: {len(clean_text)} caracteres')
 
-            # 2. Detecção de estrutura hierárquica do documento
-            logger.info("📋 Detectando estrutura hierárquica...")
-            document_structure = self.detect_hierarchical_structure(clean_text)
-            logger.info(
-                f"📋 Estrutura detectada: {len(document_structure.get('sections', []))} seções principais"
-            )
+            # 2. Extração de seções baseada em padrões do documento ICATU
+            logger.info("📋 Extraindo seções do documento...")
+            sections = self.extract_icatu_sections(clean_text)
+            logger.info(f"📋 Seções extraídas: {len(sections)}")
             
-            # Log da estrutura detectada
-            logger.info("🔍 DEBUG: Estrutura completa detectada:")
-            logger.info(f"🔍 DEBUG: Document structure type: {type(document_structure)}")
-            logger.info(f"🔍 DEBUG: Document structure keys: {document_structure.keys()}")
-            logger.info(f"🔍 DEBUG: Title: {document_structure.get('title', 'NO TITLE')}")
-            logger.info(f"🔍 DEBUG: Sections count: {len(document_structure.get('sections', []))}")
-            
-            for i, section in enumerate(document_structure.get('sections', [])[:5]):  # Log first 5 sections
-                logger.info(f"🔍 DEBUG: Section {i}: {section}")
+            # Log das seções encontradas
+            for i, section in enumerate(sections):
+                logger.info(f"🔍 Seção {i}: '{section['title']}' - {len(section['content'])} chars")
 
-            # 3. Criação de chunks com estratégia multi-nível
-            logger.info("📦 Criando chunks hierárquicos...")
-            chunks = self.create_hierarchical_chunks(document_structure, filename)
+            # 3. Criação de chunks otimizados para cada seção
+            logger.info("📦 Criando chunks das seções...")
+            chunks = self.create_section_chunks(sections, filename)
 
             if not chunks:
-                logger.warning("⚠️ Nenhum chunk criado pelo método hierárquico, tentando fallback...")
-                # Fallback para método básico
+                logger.warning("⚠️ Nenhum chunk criado, usando fallback...")
                 return self.fallback_text_chunking(clean_text, filename)
 
-            # 4. Adição de chunks de contexto global
-            logger.info("🌐 Criando chunks de contexto global...")
-            try:
-                global_chunks = self.create_global_context_chunks(
-                    clean_text, filename, len(chunks)
-                )
-                chunks.extend(global_chunks)
-                logger.info(f"✅ Added {len(global_chunks)} global context chunks")
-            except Exception as e:
-                logger.error(f"❌ Error creating global context chunks: {e}")
-
-            # 5. Validação final e otimização
-            logger.info("🔧 Otimizando chunks para recuperação...")
-            try:
-                optimized_chunks = self.optimize_chunks_for_retrieval(chunks)
-            except Exception as e:
-                logger.error(f"❌ Error optimizing chunks: {e}")
-                optimized_chunks = chunks  # Use original chunks if optimization fails
-
             logger.info(f'✅ Chunking concluído para {filename}:')
-            logger.info(f'   📊 {len(optimized_chunks)} chunks gerados')
+            logger.info(f'   📊 {len(chunks)} chunks gerados')
             
-            if len(optimized_chunks) > 0:
-                coverage = self.calculate_coverage(optimized_chunks, clean_text)
-                logger.info(f'   📏 Cobertura: {coverage:.1f}% do documento')
+            # Log de cada chunk criado
+            for i, chunk in enumerate(chunks):
+                logger.info(f"📄 Chunk {i}: {chunk.chunk_id} - {len(chunk.text)} chars - '{chunk.metadata.get('section_title', 'NO TITLE')}'")
 
-                avg_size = sum(len(c.text) for c in optimized_chunks) // len(optimized_chunks)
-                logger.info(f'   📝 Tamanho médio: {avg_size} caracteres/chunk')
-                
-                # Log de cada chunk criado
-                for i, chunk in enumerate(optimized_chunks):
-                    logger.info(f"📄 Chunk {i}: {chunk.chunk_id} - {len(chunk.text)} chars - {chunk.metadata.get('section_title', 'NO TITLE')}")
-            else:
-                logger.error('❌ CRÍTICO: Nenhum chunk válido foi gerado!')
-                return self.emergency_chunking(clean_text, filename)
-
-            return optimized_chunks
+            return chunks
 
         except Exception as e:
             logger.error(f"❌ ERRO CRÍTICO no chunking estrutural: {e}")
             logger.error(f"❌ Tentando chunking de emergência...")
             return self.emergency_chunking(text, filename)
 
-    def fallback_text_chunking(self, text: str, filename: str) -> List[DocumentChunk]:
+    def clean_text_preserving_structure(self, text: str) -> str:
+        """Limpeza básica preservando a estrutura do documento"""
+        # Remove caracteres de controle problemáticos
+        text = re.sub(r'[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]', '', text)
+        
+        # Normaliza espaços excessivos mas preserva quebras importantes
+        text = re.sub(r'[ \t]+', ' ', text)
+        text = re.sub(r'\n{3,}', '\n\n', text)
+        
+        # Remove caracteres Unicode problemáticos
+        text = re.sub(r'[\ufeff\u200b-\u200d\u2060]', '', text)
+        
+        return text.strip()
+
+    def extract_icatu_sections(self, text: str) -> List[Dict[str, Any]]:
+        """
+        Extrai seções do documento ICATU baseado em padrões específicos
+        Identifica seções numeradas (1., 2., etc.) e seções especiais (Objetivo, etc.)
+        """
+        sections = []
+        lines = text.split('\n')
+        
+        # Padrões para identificar início de seções
+        numbered_section_pattern = r'^##?\s*(\d+)\.\s*(.+?)$'  # ## 1. Título ou # 1. Título
+        objective_pattern = r'^##?\s*(Objetivo|OBJETIVO)$'
+        title_pattern = r'^##?\s*(.+?)$'  # Outros títulos com ##
+        
+        current_section = None
+        current_content = []
+        
+        for i, line in enumerate(lines):
+            line = line.strip()
+            
+            # Verifica se é uma seção numerada (1., 2., etc.)
+            numbered_match = re.match(numbered_section_pattern, line)
+            if numbered_match:
+                # Salva seção anterior se existir
+                if current_section:
+                    current_section['content'] = '\n'.join(current_content).strip()
+                    current_section['content_length'] = len(current_section['content'])
+                    sections.append(current_section)
+                
+                # Inicia nova seção numerada
+                section_number = numbered_match.group(1)
+                section_title = numbered_match.group(2).strip()
+                current_section = {
+                    'type': 'numbered_section',
+                    'number': section_number,
+                    'title': section_title,
+                    'full_title': f"{section_number}. {section_title}",
+                    'start_line': i,
+                    'keywords': self.extract_keywords_from_section_title(section_title),
+                    'topics': self.extract_topics_from_section_title(section_title)
+                }
+                current_content = []
+                continue
+            
+            # Verifica se é a seção "Objetivo"
+            objective_match = re.match(objective_pattern, line)
+            if objective_match:
+                # Salva seção anterior se existir
+                if current_section:
+                    current_section['content'] = '\n'.join(current_content).strip()
+                    current_section['content_length'] = len(current_section['content'])
+                    sections.append(current_section)
+                
+                # Inicia seção Objetivo
+                current_section = {
+                    'type': 'objective',
+                    'number': '0',
+                    'title': 'Objetivo',
+                    'full_title': 'Objetivo',
+                    'start_line': i,
+                    'keywords': ['objetivo', 'finalidade', 'orientar', 'procedimentos'],
+                    'topics': ['objetivo', 'manual', 'orientacao']
+                }
+                current_content = []
+                continue
+            
+            # Verifica se é outro tipo de título (para capturar título principal)
+            title_match = re.match(title_pattern, line)
+            if title_match and not current_section:
+                title_text = title_match.group(1).strip()
+                # Se for o título principal do documento
+                if 'manual' in title_text.lower() or 'icatu' in title_text.lower():
+                    current_section = {
+                        'type': 'main_title',
+                        'number': '-1',
+                        'title': title_text,
+                        'full_title': title_text,
+                        'start_line': i,
+                        'keywords': ['manual', 'icatu', 'alteracao', 'cadastral'],
+                        'topics': ['manual', 'titulo_principal', 'icatu']
+                    }
+                    current_content = []
+                    continue
+            
+            # Adiciona linha ao conteúdo da seção atual
+            if current_section and line:
+                current_content.append(line)
+        
+        # Salva última seção
+        if current_section:
+            current_section['content'] = '\n'.join(current_content).strip()
+            current_section['content_length'] = len(current_section['content'])
+            sections.append(current_section)
+        
+        # Filtra seções vazias ou muito pequenas
+        valid_sections = [s for s in sections if s.get('content_length', 0) > 50]
+        
+        logger.info(f"📋 Seções extraídas: {len(valid_sections)} válidas de {len(sections)} totais")
+        
+        return valid_sections
+
+    def extract_keywords_from_section_title(self, title: str) -> List[str]:
+        """Extrai palavras-chave do título da seção"""
+        # Remove palavras comuns e foca nas importantes
+        stop_words = {'de', 'da', 'do', 'para', 'com', 'em', 'por', 'a', 'o', 'e', 'ou'}
+        words = [w.lower().strip() for w in re.split(r'[\s/\-]+', title) if w.strip()]
+        keywords = [w for w in words if len(w) > 2 and w not in stop_words]
+        return keywords[:5]  # Limita a 5 palavras-chave
+
+    def extract_topics_from_section_title(self, title: str) -> List[str]:
+        """Extrai tópicos principais do título da seção"""
+        title_lower = title.lower()
+        
+        # Mapeamento de tópicos baseado no conteúdo esperado
+        topic_mapping = {
+            'quem pode solicitar': ['solicitacao', 'titular', 'responsabilidade'],
+            'tipos de alterações': ['alteracao', 'tipos', 'categorias'],
+            'documento': ['documentos', 'identificacao', 'comprovantes'],
+            'nome': ['nome', 'alteracao_nome', 'identificacao'],
+            'endereço': ['endereco', 'contato', 'localizacao'],
+            'telefone': ['telefone', 'contato', 'comunicacao'],
+            'email': ['email', 'contato', 'comunicacao'],
+            'cpf': ['cpf', 'documento', 'identificacao'],
+            'data de nascimento': ['data_nascimento', 'documento', 'identificacao'],
+            'envio': ['envio', 'documentos', 'procedimentos'],
+            'registro': ['registro', 'sistema', 'procedimentos'],
+            'prazo': ['prazos', 'tempo', 'processamento'],
+            'parceiros': ['parceiros', 'banrisul', 'canais'],
+            'interditado': ['interditado', 'curatela', 'especial'],
+            'impossibilitado': ['impossibilitado', 'assinatura', 'especial']
+        }
+        
+        topics = []
+        for key, values in topic_mapping.items():
+            if key in title_lower:
+                topics.extend(values)
+                break
+        
+        if not topics:
+            # Fallback: usar palavras-chave do título
+            topics = self.extract_keywords_from_section_title(title)
+        
+        return topics[:3]  # Limita a 3 tópicos
+
+    def create_section_chunks(self, sections: List[Dict[str, Any]], filename: str) -> List[DocumentChunk]:
+        """Cria chunks otimizados para cada seção extraída"""
+        chunks = []
+        
+        for i, section in enumerate(sections):
+            # Constrói o texto completo da seção com contexto
+            section_text = self.build_section_text_with_context(section)
+            
+            # Verifica se o chunk tem tamanho adequado
+            if len(section_text) < 100:
+                logger.warning(f"⚠️ Seção '{section['title']}' muito pequena: {len(section_text)} chars")
+                continue
+            
+            # Cria chunk da seção
+            chunk = DocumentChunk(
+                chunk_id=f"{filename}_section_{section['number']}_{i:03d}",
+                text=section_text,
+                embedding=[],
+                metadata={
+                    'filename': filename,
+                    'section_title': section['title'],
+                    'section_full_title': section['full_title'],
+                    'section_type': section['type'],
+                    'section_number': section['number'],
+                    'section_index': i,
+                    'keywords': section.get('keywords', []),
+                    'topics': section.get('topics', []),
+                    'content_length': len(section_text),
+                    'is_numbered_section': section['type'] == 'numbered_section',
+                    'is_objective': section['type'] == 'objective',
+                    'is_main_title': section['type'] == 'main_title',
+                    'context_summary': f"Seção sobre {section['title']} do manual ICATU"
+                }
+            )
+            
+            chunks.append(chunk)
+            logger.info(f"✅ Chunk criado: Seção {section['number']} - '{section['title']}' ({len(section_text)} chars)")
+        
+        # Adiciona chunk de contexto geral se não existir título principal
+        if not any(c.metadata.get('is_main_title') for c in chunks):
+            general_context = self.create_general_context_chunk(filename, len(chunks))
+            if general_context:
+                chunks.insert(0, general_context)
+        
+        return chunks
+
+    def build_section_text_with_context(self, section: Dict[str, Any]) -> str:
+        """Constrói o texto da seção com contexto para melhor recuperação"""
+        parts = []
+        
+        # Adiciona contexto do documento
+        parts.append("MANUAL DE ALTERAÇÃO CADASTRAL - ICATU")
+        parts.append("")
+        
+        # Adiciona título da seção
+        parts.append(f"# {section['full_title']}")
+        parts.append("")
+        
+        # Adiciona o conteúdo da seção
+        if section.get('content'):
+            parts.append(section['content'])
+        
+        # Adiciona contexto adicional baseado no tipo de seção
+        if section['type'] == 'numbered_section':
+            parts.append("")
+            parts.append(f"[Esta é a seção {section['number']} do manual sobre: {section['title']}]")
+        elif section['type'] == 'objective':
+            parts.append("")
+            parts.append("[Esta seção define o objetivo e finalidade do manual]")
+        
+        return '\n'.join(parts)
+
+    def create_general_context_chunk(self, filename: str, chunk_count: int) -> Optional[DocumentChunk]:
+        """Cria chunk de contexto geral do documento"""
+        context_text = """MANUAL DE ALTERAÇÃO CADASTRAL - ICATU
+
+# CONTEXTO GERAL
+
+Este é o manual oficial da ICATU Capitalização e Vida para procedimentos de alteração cadastral.
+
+## PRINCIPAIS TÓPICOS ABORDADOS:
+• Quem pode solicitar alterações cadastrais
+• Tipos de alterações cadastrais permitidas
+• Documentos necessários para cada tipo de alteração
+• Procedimentos específicos e prazos
+• Canais de atendimento e envio de documentos
+• Registros no sistema
+• Casos especiais (interditados, impossibilitados)
+
+## PÚBLICO-ALVO:
+Operadores de atendimento, analistas e profissionais que processam solicitações de alteração cadastral na ICATU.
+
+## IMPORTÂNCIA:
+Este documento é essencial para garantir que todas as alterações cadastrais sejam processadas corretamente, seguindo as normas da empresa e regulamentações vigentes.
+
+[Este é um resumo geral de todo o conteúdo do manual para consultas gerais]"""
+
+        chunk = DocumentChunk(
+            chunk_id=f"{filename}_general_context_{chunk_count:03d}",
+            text=context_text,
+            embedding=[],
+            metadata={
+                'filename': filename,
+                'section_title': 'Contexto Geral',
+                'section_type': 'general_context',
+                'section_number': '0',
+                'section_index': chunk_count,
+                'keywords': ['manual', 'icatu', 'alteracao', 'cadastral', 'geral', 'contexto'],
+                'topics': ['manual', 'contexto_geral', 'icatu', 'alteracao_cadastral'],
+                'content_length': len(context_text),
+                'is_general_context': True,
+                'context_summary': 'Contexto geral e resumo do manual completo'
+            }
+        )
+        
+        return chunk
         """Chunking básico como fallback"""
         logger.info("🆘 Executing fallback text chunking")
         
@@ -2246,37 +2471,43 @@ Este documento é essencial para operadores que processam solicitações de alte
         document_id: str,
     ):
         """Store chunks and embeddings in Qdrant with correct format"""
+        if not chunks or not embeddings:
+            raise ValueError("Chunks and embeddings cannot be empty")
+        
+        if len(chunks) != len(embeddings):
+            raise ValueError(f"Mismatch: {len(chunks)} chunks vs {len(embeddings)} embeddings")
+        
         points = []
         point_ids = []
 
         for i, (chunk, embedding) in enumerate(zip(chunks, embeddings)):
             # Validar embedding
-            if (
-                not isinstance(embedding, (list, tuple))
-                or len(embedding) != self.embedding_model.embedding_dim
-            ):
-                logger.error(
-                    f"❌ Embedding inválido para chunk {chunk.chunk_id}: dimensão {len(embedding) if embedding else 'None'}"
-                )
+            if not isinstance(embedding, (list, tuple)) or len(embedding) != self.embedding_model.embedding_dim:
+                logger.error(f"❌ Embedding inválido para chunk {chunk.chunk_id}: dimensão {len(embedding) if embedding else 'None'}")
                 continue
 
-            # Gerar ID único se necessário
-            point_id = (
-                str(uuid.uuid4()) if not chunk.chunk_id else chunk.chunk_id
-            )
+            # Converter todos os valores do embedding para float
+            try:
+                embedding = [float(x) for x in embedding]
+            except (ValueError, TypeError) as e:
+                logger.error(f"❌ Erro ao converter embedding para float: {e}")
+                continue
+
+            # Gerar ID único baseado no chunk_id
+            point_id = chunk.chunk_id if chunk.chunk_id else f"{document_id}_chunk_{i}"
             point_ids.append(point_id)
 
-            # Preparar payload com metadados serializáveis
+            # Preparar payload com metadados limpos e serializáveis
             payload = {
                 'content': chunk.text,
                 'document_id': document_id,
                 'filename': chunk.metadata.get('filename', ''),
                 'section_title': chunk.metadata.get('section_title', ''),
+                'section_full_title': chunk.metadata.get('section_full_title', ''),
                 'section_type': chunk.metadata.get('section_type', ''),
-                'section_index': chunk.metadata.get('section_index', 0),
-                'hierarchical_level': chunk.metadata.get(
-                    'hierarchical_level', 1
-                ),
+                'section_number': str(chunk.metadata.get('section_number', '')),
+                'section_index': int(chunk.metadata.get('section_index', 0)),
+                'content_length': int(chunk.metadata.get('content_length', len(chunk.text))),
                 'character_count': len(chunk.text),
                 'token_count': len(chunk.text.split()),
                 'source': 'pdf',
@@ -2284,52 +2515,65 @@ Este documento é essencial para operadores que processam solicitações de alte
                 'processing_timestamp': time.time(),
             }
 
+            # Adicionar flags booleanas de forma segura
+            boolean_fields = ['is_numbered_section', 'is_objective', 'is_main_title', 'is_general_context']
+            for field in boolean_fields:
+                if field in chunk.metadata:
+                    payload[field] = bool(chunk.metadata[field])
+
             # Adicionar keywords e topics como strings
             if 'keywords' in chunk.metadata and chunk.metadata['keywords']:
-                payload['keywords'] = (
-                    ','.join(chunk.metadata['keywords'])
-                    if isinstance(chunk.metadata['keywords'], list)
-                    else str(chunk.metadata['keywords'])
-                )
+                if isinstance(chunk.metadata['keywords'], list):
+                    payload['keywords'] = ','.join(str(k) for k in chunk.metadata['keywords'] if k)
+                else:
+                    payload['keywords'] = str(chunk.metadata['keywords'])
 
             if 'topics' in chunk.metadata and chunk.metadata['topics']:
-                payload['topics'] = (
-                    ','.join(chunk.metadata['topics'])
-                    if isinstance(chunk.metadata['topics'], list)
-                    else str(chunk.metadata['topics'])
+                if isinstance(chunk.metadata['topics'], list):
+                    payload['topics'] = ','.join(str(t) for t in chunk.metadata['topics'] if t)
+                else:
+                    payload['topics'] = str(chunk.metadata['topics'])
+
+            # Adicionar contexto summary
+            if 'context_summary' in chunk.metadata and chunk.metadata['context_summary']:
+                payload['context_summary'] = str(chunk.metadata['context_summary'])
+
+            # Criar ponto no formato correto para Qdrant usando PointStruct
+            try:
+                point = PointStruct(
+                    id=point_id,
+                    vector=embedding,
+                    payload=payload
                 )
-
-            # Adicionar outros metadados importantes
-            for key in [
-                'context_summary',
-                'search_keywords',
-                'search_topics',
-                'normalized_content',
-            ]:
-                if key in chunk.metadata and chunk.metadata[key]:
-                    payload[key] = str(chunk.metadata[key])
-
-            # Criar ponto no formato correto para Qdrant
-            point = models.PointStruct(
-                id=point_id, vector=embedding, payload=payload
-            )
-            points.append(point)
+                points.append(point)
+            except Exception as e:
+                logger.error(f"❌ Erro ao criar PointStruct para {point_id}: {e}")
+                continue
 
         if not points:
-            raise ValueError(
-                'Nenhum ponto válido foi criado para armazenamento'
-            )
+            raise ValueError("Nenhum ponto válido foi criado para armazenamento")
 
-        # Armazenar no Qdrant
+        # Armazenar no Qdrant usando upsert
         try:
-            self.qdrant_client.upsert(
-                collection_name=COLLECTION_NAME, points=points, wait=True
+            logger.info(f"📤 Enviando {len(points)} pontos para Qdrant...")
+            
+            # Usar o cliente corretamente
+            result = self.qdrant_client.upsert(
+                collection_name=COLLECTION_NAME,
+                points=points,
+                wait=True
             )
-            logger.info(
-                f'✅ Stored {len(points)} chunks in Qdrant for document {document_id}. IDs: {point_ids}'
-            )
+            
+            logger.info(f'✅ Armazenados {len(points)} chunks no Qdrant para documento {document_id}')
+            logger.info(f'📋 IDs dos pontos: {point_ids[:5]}{"..." if len(point_ids) > 5 else ""}')
+            
+            return result
+            
         except Exception as e:
             logger.error(f'❌ Erro ao armazenar no Qdrant: {e}')
+            logger.error(f'❌ Tipo do erro: {type(e)}')
+            if hasattr(e, 'response'):
+                logger.error(f'❌ Response: {e.response}')
             raise
 
         # Padrões para identificar seções e estruturas
