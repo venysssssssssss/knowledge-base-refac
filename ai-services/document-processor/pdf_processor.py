@@ -2486,11 +2486,27 @@ Este documento é essencial para operadores que processam solicitações de alte
                 logger.error(f"❌ Embedding inválido para chunk {chunk.chunk_id}: dimensão {len(embedding) if embedding else 'None'}")
                 continue
 
-            # Converter todos os valores do embedding para float
+            # Converter todos os valores do embedding para float e validar
             try:
+                if not embedding or not isinstance(embedding, (list, tuple)):
+                    logger.error(f"❌ Embedding inválido para {chunk.chunk_id}: não é lista/tupla")
+                    continue
+                    
+                # Converter para lista de floats
                 embedding = [float(x) for x in embedding]
+                
+                # Verificar se todos os valores são números válidos
+                if not all(isinstance(x, (int, float)) and not (isinstance(x, float) and (x != x or x == float('inf') or x == float('-inf'))) for x in embedding):
+                    logger.error(f"❌ Embedding contém valores inválidos para {chunk.chunk_id}")
+                    continue
+                    
+                # Verificar dimensão
+                if len(embedding) != self.embedding_model.embedding_dim:
+                    logger.error(f"❌ Dimensão incorreta para {chunk.chunk_id}: {len(embedding)} vs {self.embedding_model.embedding_dim}")
+                    continue
+                    
             except (ValueError, TypeError) as e:
-                logger.error(f"❌ Erro ao converter embedding para float: {e}")
+                logger.error(f"❌ Erro ao processar embedding para {chunk.chunk_id}: {e}")
                 continue
 
             # Gerar ID único baseado no chunk_id
@@ -2498,56 +2514,98 @@ Este documento é essencial para operadores que processam solicitações de alte
             point_ids.append(point_id)
 
             # Preparar payload com metadados limpos e serializáveis
-            payload = {
-                'content': chunk.text,
-                'document_id': document_id,
-                'filename': chunk.metadata.get('filename', ''),
-                'section_title': chunk.metadata.get('section_title', ''),
-                'section_full_title': chunk.metadata.get('section_full_title', ''),
-                'section_type': chunk.metadata.get('section_type', ''),
-                'section_number': str(chunk.metadata.get('section_number', '')),
-                'section_index': int(chunk.metadata.get('section_index', 0)),
-                'content_length': int(chunk.metadata.get('content_length', len(chunk.text))),
-                'character_count': len(chunk.text),
-                'token_count': len(chunk.text.split()),
-                'source': 'pdf',
-                'content_type': 'document',
-                'processing_timestamp': time.time(),
-            }
-
-            # Adicionar flags booleanas de forma segura
-            boolean_fields = ['is_numbered_section', 'is_objective', 'is_main_title', 'is_general_context']
-            for field in boolean_fields:
-                if field in chunk.metadata:
-                    payload[field] = bool(chunk.metadata[field])
-
-            # Adicionar keywords e topics como strings
-            if 'keywords' in chunk.metadata and chunk.metadata['keywords']:
-                if isinstance(chunk.metadata['keywords'], list):
-                    payload['keywords'] = ','.join(str(k) for k in chunk.metadata['keywords'] if k)
-                else:
-                    payload['keywords'] = str(chunk.metadata['keywords'])
-
-            if 'topics' in chunk.metadata and chunk.metadata['topics']:
-                if isinstance(chunk.metadata['topics'], list):
-                    payload['topics'] = ','.join(str(t) for t in chunk.metadata['topics'] if t)
-                else:
-                    payload['topics'] = str(chunk.metadata['topics'])
-
-            # Adicionar contexto summary
-            if 'context_summary' in chunk.metadata and chunk.metadata['context_summary']:
-                payload['context_summary'] = str(chunk.metadata['context_summary'])
-
-            # Criar ponto no formato correto para Qdrant usando PointStruct
+            payload = {}
+            
+            # Campos básicos e seguros
             try:
-                point = PointStruct(
-                    id=point_id,
-                    vector=embedding,
-                    payload=payload
-                )
-                points.append(point)
+                payload.update({
+                    'content': str(chunk.text) if chunk.text else '',
+                    'document_id': str(document_id),
+                    'filename': str(chunk.metadata.get('filename', '')),
+                    'section_title': str(chunk.metadata.get('section_title', '')),
+                    'section_full_title': str(chunk.metadata.get('section_full_title', '')),
+                    'section_type': str(chunk.metadata.get('section_type', '')),
+                    'section_number': str(chunk.metadata.get('section_number', '')),
+                    'character_count': int(len(chunk.text)),
+                    'token_count': int(len(chunk.text.split())),
+                    'source': 'pdf',
+                    'content_type': 'document',
+                    'processing_timestamp': float(time.time()),
+                })
+                
+                # Campos numéricos seguros
+                section_index = chunk.metadata.get('section_index', 0)
+                if isinstance(section_index, (int, float)) and not (isinstance(section_index, float) and section_index != section_index):
+                    payload['section_index'] = int(section_index)
+                else:
+                    payload['section_index'] = 0
+                
+                content_length = chunk.metadata.get('content_length', len(chunk.text))
+                if isinstance(content_length, (int, float)) and not (isinstance(content_length, float) and content_length != content_length):
+                    payload['content_length'] = int(content_length)
+                else:
+                    payload['content_length'] = len(chunk.text)
+                
             except Exception as e:
-                logger.error(f"❌ Erro ao criar PointStruct para {point_id}: {e}")
+                logger.error(f"❌ Erro ao criar payload básico para {chunk.chunk_id}: {e}")
+                continue
+
+            # Adicionar campos opcionais de forma segura
+            try:
+                # Flags booleanas
+                boolean_fields = ['is_numbered_section', 'is_objective', 'is_main_title', 'is_general_context']
+                for field in boolean_fields:
+                    if field in chunk.metadata:
+                        payload[field] = bool(chunk.metadata[field])
+
+                # Keywords como string
+                if 'keywords' in chunk.metadata and chunk.metadata['keywords']:
+                    keywords = chunk.metadata['keywords']
+                    if isinstance(keywords, list):
+                        # Filtrar valores vazios ou None
+                        valid_keywords = [str(k).strip() for k in keywords if k and str(k).strip()]
+                        if valid_keywords:
+                            payload['keywords'] = ','.join(valid_keywords)
+                    else:
+                        keyword_str = str(keywords).strip()
+                        if keyword_str:
+                            payload['keywords'] = keyword_str
+
+                # Topics como string
+                if 'topics' in chunk.metadata and chunk.metadata['topics']:
+                    topics = chunk.metadata['topics']
+                    if isinstance(topics, list):
+                        # Filtrar valores vazios ou None
+                        valid_topics = [str(t).strip() for t in topics if t and str(t).strip()]
+                        if valid_topics:
+                            payload['topics'] = ','.join(valid_topics)
+                    else:
+                        topic_str = str(topics).strip()
+                        if topic_str:
+                            payload['topics'] = topic_str
+
+                # Context summary
+                if 'context_summary' in chunk.metadata and chunk.metadata['context_summary']:
+                    context_summary = str(chunk.metadata['context_summary']).strip()
+                    if context_summary:
+                        payload['context_summary'] = context_summary
+                        
+            except Exception as e:
+                logger.error(f"❌ Erro ao adicionar campos opcionais para {chunk.chunk_id}: {e}")
+                # Continuar sem os campos opcionais
+
+            # Criar ponto no formato correto para Qdrant
+            try:
+                # Usar o formato de dict simples ao invés de PointStruct
+                point = {
+                    "id": point_id,
+                    "vector": embedding,
+                    "payload": payload
+                }
+                points.append(point)
+                logger.debug(f"✅ Ponto criado para {point_id}: {len(embedding)} dims")
+            except Exception as e:
+                logger.error(f"❌ Erro ao criar ponto para {point_id}: {e}")
                 continue
 
         if not points:
@@ -2556,8 +2614,9 @@ Este documento é essencial para operadores que processam solicitações de alte
         # Armazenar no Qdrant usando upsert
         try:
             logger.info(f"📤 Enviando {len(points)} pontos para Qdrant...")
+            logger.debug(f"🔍 Exemplo de ponto: {points[0] if points else 'Nenhum ponto'}")
             
-            # Usar o cliente corretamente
+            # Usar o método upsert com os pontos no formato correto
             result = self.qdrant_client.upsert(
                 collection_name=COLLECTION_NAME,
                 points=points,
@@ -2566,12 +2625,24 @@ Este documento é essencial para operadores que processam solicitações de alte
             
             logger.info(f'✅ Armazenados {len(points)} chunks no Qdrant para documento {document_id}')
             logger.info(f'📋 IDs dos pontos: {point_ids[:5]}{"..." if len(point_ids) > 5 else ""}')
+            logger.info(f'📊 Resultado do upsert: {result}')
             
             return result
             
         except Exception as e:
             logger.error(f'❌ Erro ao armazenar no Qdrant: {e}')
             logger.error(f'❌ Tipo do erro: {type(e)}')
+            logger.error(f'❌ Número de pontos: {len(points)}')
+            
+            # Log detalhado do primeiro ponto para debug
+            if points:
+                first_point = points[0]
+                logger.error(f'❌ Estrutura do primeiro ponto:')
+                logger.error(f'   - ID: {first_point.get("id", "MISSING")}')
+                logger.error(f'   - Vector type: {type(first_point.get("vector", "MISSING"))}')
+                logger.error(f'   - Vector length: {len(first_point.get("vector", [])) if first_point.get("vector") else "MISSING"}')
+                logger.error(f'   - Payload keys: {list(first_point.get("payload", {}).keys())}')
+            
             if hasattr(e, 'response'):
                 logger.error(f'❌ Response: {e.response}')
             raise
