@@ -1,17 +1,18 @@
-from pathlib import Path
-from docling.document_converter import DocumentConverter
-from docling_parse.pdf_parser import DoclingPdfParser
-from docling_core.types.doc.page import TextCellUnit
 from io import BytesIO
+from pathlib import Path
+
 from docling.datamodel.base_models import DocumentStream
+from docling.document_converter import DocumentConverter
+from docling_core.types.doc.page import TextCellUnit
+from docling_parse.pdf_parser import DoclingPdfParser
 
 # Caminho absoluto ou relativo a partir do script atual
 base_dir = Path(__file__).parent
-pdf_filename = "Manual_de_Alteração_Cadastral_ICATU 1 1.pdf"
+pdf_filename = 'Manual_de_Alteração_Cadastral_ICATU 1 1.pdf'
 pdf_path = base_dir / pdf_filename
 
 if not pdf_path.exists():
-    raise FileNotFoundError(f"Arquivo não encontrado: {pdf_path}")
+    raise FileNotFoundError(f'Arquivo não encontrado: {pdf_path}')
 
 # 🚀 Extração simples para Markdown
 converter = DocumentConverter()

@@ -8,3 +8,18 @@ python-multipart>=0.0.20
 torch>=2.4.0
 transformers>=4.54.0
 numpy>=1.24
+
+# Enhanced PDF extraction libraries
+pdfminer.six>=20231228
+pdfplumber>=0.10.0
+
+# Docling for advanced PDF parsing (optional)
+docling>=1.5.0
+docling-core>=1.2.0
+docling-parse>=1.1.0
+
+# Sentence transformers for embeddings
+sentence-transformers>=2.2.2
+
+# Additional dependencies for better text processing
+pillow>=9.0.0  # For image processing in PDFs
