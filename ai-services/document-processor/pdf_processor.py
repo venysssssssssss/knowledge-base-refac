@@ -3048,29 +3048,48 @@ Este documento é essencial para operadores que processam solicitações de alte
             
             # Usar método direto mais simples para máxima compatibilidade
             try:
-                # NOVO: Usar formato Batch como descoberto na API
-                logger.info("🔄 Usando formato Batch para Qdrant...")
+                # CORRIGIDO: Usar formato descoberto na API do Qdrant v1.7.0
+                logger.info("🔄 Usando formato correto para Qdrant v1.7.0...")
                 
-                # Preparar listas para Batch
+                # Preparar listas para o formato correto
                 batch_ids = []
                 batch_vectors = []
                 batch_payloads = []
                 
-                for point_data in qdrant_points:
-                    batch_ids.append(point_data["id"])
+                for i, point_data in enumerate(qdrant_points):
+                    # Gerar ID inteiro único baseado no hash do chunk_id
+                    chunk_id_str = point_data["id"]
+                    # Usar hash para gerar ID inteiro único
+                    import hashlib
+                    hash_int = int(hashlib.md5(chunk_id_str.encode()).hexdigest()[:8], 16)
+                    
+                    batch_ids.append(hash_int)
                     batch_vectors.append(point_data["vector"])
                     batch_payloads.append(point_data["payload"])
                 
-                # Usar Batch format
-                result = self.qdrant_client.upsert(
-                    collection_name=COLLECTION_NAME,
-                    points=Batch(
-                        ids=batch_ids,
-                        vectors=batch_vectors,
-                        payloads=batch_payloads
-                    ),
-                    wait=True
-                )
+                # Usar formato correto descoberto
+                upsert_data = {
+                    "ids": batch_ids,
+                    "vectors": batch_vectors,
+                    "payloads": batch_payloads
+                }
+                
+                # Fazer requisição direta HTTP pois o cliente Python pode estar usando formato antigo
+                async with httpx.AsyncClient() as client:
+                    response = await client.post(
+                        f"{QDRANT_URL}/collections/{COLLECTION_NAME}/points?wait=true",
+                        json=upsert_data,
+                        headers={"Content-Type": "application/json"}
+                    )
+                    
+                    if response.status_code == 200:
+                        result = response.json()
+                        logger.info(f"✅ Qdrant HTTP insert successful: {result}")
+                    else:
+                        logger.error(f"❌ Qdrant HTTP insert failed: {response.status_code} - {response.text}")
+                        raise Exception(f"HTTP insert failed: {response.status_code}")
+                
+                result = {"status": "success", "method": "http_direct"}
                 
             except Exception as upsert_error:
                 logger.error(f"❌ Erro no upsert normal: {upsert_error}")
