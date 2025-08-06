@@ -266,39 +266,69 @@ class DocumentProcessor:
             return None
 
     def extract_text_from_pdf(self, pdf_file: bytes) -> str:
-        """Extract text from PDF file, prefer Docling, fallback PyPDF2/pdfminer"""
+        """Extract text from PDF file with enhanced debugging and multiple fallbacks"""
+        logger.info(f"🔍 Starting PDF text extraction, file size: {len(pdf_file)} bytes")
+        
+        # Try Docling first (most advanced)
         docling_text = self.extract_text_with_docling(pdf_file)
         if docling_text and len(docling_text.strip()) > 50:
-            logger.info("✅ Docling parsing used for PDF")
+            logger.info(f"✅ Docling extraction successful: {len(docling_text)} characters")
+            logger.info(f"📄 Docling preview: {docling_text[:200]}...")
             return docling_text
+        else:
+            logger.info(f"⚠️ Docling extraction failed or insufficient text: {len(docling_text) if docling_text else 0} chars")
+            
         # Fallback para PyPDF2
+        logger.info("🔄 Trying PyPDF2 extraction...")
         try:
             import io
             pdf_reader = PyPDF2.PdfReader(io.BytesIO(pdf_file))
             text = ""
-            for page in pdf_reader.pages:
-                page_text = page.extract_text()
-                if page_text:
-                    text += page_text + "\n"
+            page_count = len(pdf_reader.pages)
+            logger.info(f"📖 PDF has {page_count} pages")
+            
+            for i, page in enumerate(pdf_reader.pages):
+                try:
+                    page_text = page.extract_text()
+                    if page_text:
+                        text += page_text + "\n"
+                        logger.info(f"📄 Page {i+1}: {len(page_text)} characters extracted")
+                    else:
+                        logger.warning(f"⚠️ Page {i+1}: No text extracted")
+                except Exception as e:
+                    logger.warning(f"⚠️ Page {i+1}: Extraction error: {e}")
+                    
             if len(text.strip()) > 50:
-                logger.info("✅ PyPDF2 parsing used for PDF")
+                logger.info(f"✅ PyPDF2 extraction successful: {len(text)} characters total")
+                logger.info(f"📄 PyPDF2 preview: {text[:200]}...")
                 return text.strip()
+            else:
+                logger.warning(f"⚠️ PyPDF2 extracted insufficient text: {len(text)} chars")
         except Exception as e:
-            logger.warning(f"PyPDF2 parsing failed: {e}")
+            logger.warning(f"❌ PyPDF2 parsing failed: {e}")
+            
         # Fallback para pdfminer
+        logger.info("🔄 Trying pdfminer extraction...")
         try:
             from pdfminer.high_level import extract_text
             import io
             text = extract_text(io.BytesIO(pdf_file))
-            logger.info("✅ pdfminer parsing used for PDF")
-            return text.strip()
+            if text and len(text.strip()) > 50:
+                logger.info(f"✅ pdfminer extraction successful: {len(text)} characters")
+                logger.info(f"📄 pdfminer preview: {text[:200]}...")
+                return text.strip()
+            else:
+                logger.warning(f"⚠️ pdfminer extracted insufficient text: {len(text) if text else 0} chars")
         except Exception as e:
-            logger.error(f"Error extracting text from PDF: {e}")
-            raise HTTPException(status_code=400, detail=f"Failed to extract text from PDF: {str(e)}")
+            logger.error(f"❌ pdfminer parsing failed: {e}")
+            
+        # If all methods fail
+        logger.error("❌ All PDF extraction methods failed!")
+        raise HTTPException(status_code=400, detail="Failed to extract text from PDF using all available methods (Docling, PyPDF2, pdfminer)")
     
     def chunk_text(self, text: str, filename: str) -> List[DocumentChunk]:
         """
-        CHUNKING HIERÁRQUICO OTIMIZADO para capturar TODO o contexto
+        CHUNKING HIERÁRQUICO OTIMIZADO com DEBUGGING COMPLETO
         
         ESTRATÉGIAS IMPLEMENTADAS:
         1. 🎯 Chunks maiores (2048 tokens) para máximo contexto
@@ -311,7 +341,42 @@ class DocumentProcessor:
         import re
         from transformers import AutoTokenizer
         
+        logger.info(f"🔍 CHUNKING DEBUG: Starting chunking for {filename}")
+        logger.info(f"📊 Input text length: {len(text)} characters")
+        logger.info(f"📄 Text preview: {text[:300]}...")
+        
         tokenizer = AutoTokenizer.from_pretrained(EMBEDDING_MODEL)
+        
+        # Pré-processamento avançado do texto
+        original_length = len(text)
+        text = preprocess_text_advanced(text)
+        processed_length = len(text)
+        
+        logger.info(f"🔧 Text preprocessing: {original_length} -> {processed_length} chars")
+        
+        if processed_length < MIN_CHUNK_SIZE:
+            logger.warning(f"⚠️ Text too short after preprocessing: {processed_length} < {MIN_CHUNK_SIZE}")
+            if processed_length > 0:
+                # Create a single chunk with the available text
+                chunk = DocumentChunk(
+                    chunk_id=str(uuid.uuid4()),
+                    text=text,
+                    embedding=[],
+                    metadata={
+                        "filename": filename,
+                        "section": "COMPLETE_DOCUMENT",
+                        "categories": ["geral"],
+                        "chunk_index": 0,
+                        "source": "pdf",
+                        "is_short_document": True,
+                        "character_count": len(text)
+                    }
+                )
+                logger.info(f"✅ Created single chunk for short document: {len(text)} chars")
+                return [chunk]
+            else:
+                logger.error(f"❌ No text available for chunking!")
+                return []
         
         # Pré-processamento avançado do texto
         text = preprocess_text_advanced(text)
@@ -385,6 +450,63 @@ class DocumentProcessor:
         
         # ESTRATÉGIA 1: Processamento por parágrafos com overlap inteligente
         paragraphs = text.split('\n\n')
+        logger.info(f"📝 Split into {len(paragraphs)} paragraphs")
+        
+        # Se não há parágrafos bem definidos, dividir por quebras simples
+        if len(paragraphs) == 1:
+            paragraphs = text.split('\n')
+            logger.info(f"📝 Fallback: Split into {len(paragraphs)} lines")
+        
+        # Se ainda assim há muito pouco conteúdo, usar o texto completo
+        if len(paragraphs) <= 2 and len(text) > MIN_CHUNK_SIZE:
+            logger.warning(f"⚠️ Very few paragraphs ({len(paragraphs)}), using sentence-based chunking")
+            # Dividir por sentenças
+            import re
+            sentences = re.split(r'(?<=[.!?])\s+', text)
+            logger.info(f"📝 Split into {len(sentences)} sentences")
+            
+            # Reagrupar sentenças em chunks
+            chunks = []
+            current_chunk = ""
+            chunk_index = 0
+            
+            for sent in sentences:
+                sent = sent.strip()
+                if not sent:
+                    continue
+                    
+                # Verificar se adicionar a sentença não excede o limite
+                test_chunk = current_chunk + " " + sent if current_chunk else sent
+                tokens = len(tokenizer.encode(test_chunk, add_special_tokens=False))
+                
+                if tokens > CHUNK_SIZE and current_chunk:
+                    # Salvar chunk atual
+                    if len(current_chunk.strip()) >= MIN_CHUNK_SIZE:
+                        categories = categorize_content(current_chunk)
+                        chunk = create_chunk_with_context(
+                            current_chunk, "SENTENCE_BASED", categories,
+                            chunk_index, 0, 0
+                        )
+                        chunks.append(chunk)
+                        logger.info(f"✅ Created sentence-based chunk {chunk_index}: {len(current_chunk)} chars")
+                        chunk_index += 1
+                    current_chunk = sent
+                else:
+                    current_chunk = test_chunk
+            
+            # Adicionar último chunk
+            if current_chunk and len(current_chunk.strip()) >= MIN_CHUNK_SIZE:
+                categories = categorize_content(current_chunk)
+                chunk = create_chunk_with_context(
+                    current_chunk, "SENTENCE_BASED", categories,
+                    chunk_index, 0, 0
+                )
+                chunks.append(chunk)
+                logger.info(f"✅ Created final sentence-based chunk {chunk_index}: {len(current_chunk)} chars")
+            
+            logger.info(f"🎯 Sentence-based chunking created {len(chunks)} chunks")
+            return chunks
+        
         chunks = []
         current_section = "DOCUMENTO_PRINCIPAL"
         section_index = 0
@@ -395,15 +517,21 @@ class DocumentProcessor:
         chunk_tokens = 0
         previous_chunk_text = ""  # Para overlap
         
-        doc_logger.info(f"Iniciando chunking hierárquico para {filename}: {len(paragraphs)} parágrafos")
+        doc_logger.info(f"🔍 Starting paragraph-based chunking for {filename}: {len(paragraphs)} paragraphs")
         
+        non_empty_paragraphs = 0
         for para_idx, paragraph in enumerate(paragraphs):
             paragraph = paragraph.strip()
             if not paragraph:
                 continue
+                
+            non_empty_paragraphs += 1
+            if para_idx < 5:  # Log first 5 paragraphs for debugging
+                logger.info(f"📄 Paragraph {para_idx}: {len(paragraph)} chars - {paragraph[:100]}...")
             
             # Detecta nova seção baseada em padrões
             if section_pattern.match(paragraph) or title_pattern.match(paragraph):
+                logger.info(f"🏷️ Detected new section: {paragraph[:50]}...")
                 # Finaliza chunk atual se existir
                 if chunk_buffer and len(chunk_buffer.strip()) >= MIN_CHUNK_SIZE:
                     categories = categorize_content(chunk_buffer)
@@ -412,6 +540,7 @@ class DocumentProcessor:
                         chunk_index, section_index, para_idx
                     )
                     chunks.append(chunk)
+                    logger.info(f"✅ Created section-end chunk {chunk_index}: {len(chunk_buffer)} chars, categories: {categories}")
                     previous_chunk_text = chunk_buffer[-CHUNK_OVERLAP:] if len(chunk_buffer) > CHUNK_OVERLAP else chunk_buffer
                     chunk_index += 1
                 
@@ -546,9 +675,108 @@ class DocumentProcessor:
         doc_logger.info(f"   📝 Tamanho médio: {covered_chars // len(chunks) if chunks else 0} caracteres/chunk")
         doc_logger.info(f"   🏷️ Categorias: {category_stats}")
         
-        # ESTRATÉGIA 6: Validação de qualidade
-        if coverage_ratio < 0.90:
-            doc_logger.warning(f"⚠️ Cobertura baixa ({coverage_ratio:.2%}) - possível perda de conteúdo!")
+        # ESTRATÉGIA 6: Validação crítica e fallback robusto
+        if len(chunks) < 3 or coverage_ratio < 0.90:
+            logger.warning(f"⚠️ PROBLEMA CRÍTICO: {len(chunks)} chunks, cobertura {coverage_ratio:.2%}")
+            logger.warning(f"🔧 Ativando fallback: chunking por força bruta...")
+            
+            # FALLBACK: Chunking por força bruta - dividir o texto em chunks de tamanho fixo
+            fallback_chunks = []
+            words = text.split()
+            current_chunk_words = []
+            current_chunk_tokens = 0
+            fallback_chunk_index = 0
+            
+            for word in words:
+                # Estimar tokens (aproximadamente 1 token = 0.75 palavras para português)
+                word_tokens = max(1, len(word) // 4)
+                
+                if current_chunk_tokens + word_tokens > CHUNK_SIZE and current_chunk_words:
+                    # Criar chunk atual
+                    chunk_text = " ".join(current_chunk_words)
+                    if len(chunk_text.strip()) >= MIN_CHUNK_SIZE:
+                        categories = categorize_content(chunk_text)
+                        fallback_chunk = DocumentChunk(
+                            chunk_id=str(uuid.uuid4()),
+                            text=chunk_text,
+                            embedding=[],
+                            metadata={
+                                "filename": filename,
+                                "section": f"FALLBACK_CHUNK_{fallback_chunk_index}",
+                                "categories": categories,
+                                "chunk_index": fallback_chunk_index,
+                                "source": "pdf",
+                                "content_type": "document",
+                                "token_count": current_chunk_tokens,
+                                "character_count": len(chunk_text),
+                                "is_fallback": True,
+                                "processing_timestamp": time.time()
+                            }
+                        )
+                        fallback_chunks.append(fallback_chunk)
+                        logger.info(f"✅ Fallback chunk {fallback_chunk_index}: {len(chunk_text)} chars")
+                        fallback_chunk_index += 1
+                    
+                    # Começar novo chunk com overlap
+                    overlap_size = min(50, len(current_chunk_words) // 4)
+                    current_chunk_words = current_chunk_words[-overlap_size:] + [word]
+                    current_chunk_tokens = word_tokens + overlap_size
+                else:
+                    current_chunk_words.append(word)
+                    current_chunk_tokens += word_tokens
+            
+            # Adicionar último chunk
+            if current_chunk_words:
+                chunk_text = " ".join(current_chunk_words)
+                if len(chunk_text.strip()) >= MIN_CHUNK_SIZE:
+                    categories = categorize_content(chunk_text)
+                    fallback_chunk = DocumentChunk(
+                        chunk_id=str(uuid.uuid4()),
+                        text=chunk_text,
+                        embedding=[],
+                        metadata={
+                            "filename": filename,
+                            "section": f"FALLBACK_CHUNK_{fallback_chunk_index}",
+                            "categories": categories,
+                            "chunk_index": fallback_chunk_index,
+                            "source": "pdf",
+                            "content_type": "document",
+                            "token_count": current_chunk_tokens,
+                            "character_count": len(chunk_text),
+                            "is_fallback": True,
+                            "processing_timestamp": time.time()
+                        }
+                    )
+                    fallback_chunks.append(fallback_chunk)
+                    logger.info(f"✅ Final fallback chunk {fallback_chunk_index}: {len(chunk_text)} chars")
+            
+            if len(fallback_chunks) > len(chunks):
+                logger.info(f"🔧 Fallback successful: {len(fallback_chunks)} chunks vs {len(chunks)} original")
+                chunks = fallback_chunks
+            else:
+                logger.warning(f"⚠️ Fallback não melhorou: {len(fallback_chunks)} vs {len(chunks)}")
+        
+        # ESTRATÉGIA 7: Último recurso - garantir pelo menos um chunk
+        if len(chunks) == 0:
+            logger.error(f"❌ CRÍTICO: Nenhum chunk gerado para {filename}!")
+            logger.info(f"🆘 Criando chunk de emergência com todo o texto...")
+            emergency_chunk = DocumentChunk(
+                chunk_id=str(uuid.uuid4()),
+                text=text[:CHUNK_SIZE*4],  # Limita para evitar chunks gigantes
+                embedding=[],
+                metadata={
+                    "filename": filename,
+                    "section": "EMERGENCY_COMPLETE_DOCUMENT",
+                    "categories": ["geral", "emergency"],
+                    "chunk_index": 0,
+                    "source": "pdf",
+                    "is_emergency": True,
+                    "character_count": len(text),
+                    "processing_timestamp": time.time()
+                }
+            )
+            chunks = [emergency_chunk]
+            logger.info(f"🆘 Emergency chunk created: {len(emergency_chunk.text)} chars")
         
         if len(chunks) == 0:
             doc_logger.error(f"❌ Nenhum chunk gerado para {filename}!")
@@ -858,6 +1086,138 @@ async def search_documents(request: SearchRequest):
 @app.get("/collections/info")
 async def get_collection_info():
     """Get information about the Qdrant collection"""
+    return await processor.get_collection_info()
+
+@app.get("/debug/chunks/{document_id}")
+async def debug_chunks(document_id: str):
+    """Debug endpoint to see all chunks for a document"""
+    try:
+        # Buscar todos os chunks do documento no Qdrant
+        search_results = processor.qdrant_client.scroll(
+            collection_name=COLLECTION_NAME,
+            scroll_filter=models.Filter(
+                must=[
+                    models.FieldCondition(
+                        key="document_id",
+                        match=models.MatchValue(value=document_id)
+                    )
+                ]
+            ),
+            limit=100,  # Buscar até 100 chunks
+            with_payload=True,
+            with_vectors=False
+        )
+        
+        chunks_info = []
+        for point in search_results[0]:
+            chunk_info = {
+                "chunk_id": point.id,
+                "content_preview": point.payload.get("content", "")[:200] + "..." if len(point.payload.get("content", "")) > 200 else point.payload.get("content", ""),
+                "content_length": len(point.payload.get("content", "")),
+                "categories": point.payload.get("categories", []),
+                "section": point.payload.get("section", ""),
+                "chunk_index": point.payload.get("chunk_index", 0),
+                "token_count": point.payload.get("token_count", 0),
+                "metadata": {k: v for k, v in point.payload.items() if k not in ["content"]}
+            }
+            chunks_info.append(chunk_info)
+        
+        # Ordenar por chunk_index
+        chunks_info.sort(key=lambda x: x.get("chunk_index", 0))
+        
+        return {
+            "document_id": document_id,
+            "total_chunks": len(chunks_info),
+            "chunks": chunks_info
+        }
+        
+    except Exception as e:
+        logger.error(f"Error debugging chunks for {document_id}: {e}")
+        raise HTTPException(status_code=500, detail=f"Debug failed: {str(e)}")
+
+@app.get("/debug/text-extraction/{document_hash}")
+async def debug_text_extraction(document_hash: str):
+    """Debug endpoint to see raw text extraction (requires re-upload for testing)"""
+    # Note: This would require storing original PDFs or re-uploading for debug
+    return {"message": "Upload a PDF with ?debug=true to see text extraction details"}
+
+@app.post("/upload-pdf-debug", response_model=Dict[str, Any])
+async def upload_pdf_debug(file: UploadFile = File(...)):
+    """Upload PDF with detailed debugging information"""
+    if not file.filename.lower().endswith('.pdf'):
+        raise HTTPException(status_code=400, detail="Only PDF files are supported")
+    
+    import time
+    start_time = time.time()
+    
+    try:
+        # Read file content
+        pdf_content = await file.read()
+        
+        # Generate document ID
+        file_hash = hashlib.md5(pdf_content).hexdigest()
+        document_id = f"doc_{file_hash[:12]}"
+        
+        # Extract text with debugging
+        logger.info(f"🔍 DEBUG: Processing PDF: {file.filename}")
+        text = processor.extract_text_from_pdf(pdf_content)
+        
+        debug_info = {
+            "filename": file.filename,
+            "document_id": document_id,
+            "file_size_bytes": len(pdf_content),
+            "extracted_text_length": len(text),
+            "extracted_text_preview": text[:500] + "..." if len(text) > 500 else text,
+            "text_empty": not text.strip()
+        }
+        
+        if not text.strip():
+            debug_info["error"] = "No text could be extracted from PDF"
+            return debug_info
+        
+        # Chunk text with debugging
+        logger.info(f"🔍 DEBUG: Starting chunking process...")
+        chunks = processor.chunk_text(text, file.filename)
+        
+        debug_info.update({
+            "chunks_generated": len(chunks),
+            "chunks_details": []
+        })
+        
+        # Add detailed chunk information
+        for i, chunk in enumerate(chunks):
+            chunk_detail = {
+                "chunk_index": i,
+                "chunk_id": chunk.chunk_id,
+                "text_length": len(chunk.text),
+                "text_preview": chunk.text[:200] + "..." if len(chunk.text) > 200 else chunk.text,
+                "categories": chunk.metadata.get("categories", []),
+                "section": chunk.metadata.get("section", ""),
+                "token_count": chunk.metadata.get("token_count", 0),
+                "has_overlap": chunk.metadata.get("has_overlap", False)
+            }
+            debug_info["chunks_details"].append(chunk_detail)
+        
+        # Generate embeddings (optional for debug)
+        logger.info(f"🔍 DEBUG: Generating embeddings for {len(chunks)} chunks...")
+        embeddings = await processor.generate_embeddings([chunk.text for chunk in chunks])
+        
+        # Store in Qdrant
+        await processor.store_in_qdrant(chunks, embeddings, document_id)
+        
+        processing_time = time.time() - start_time
+        debug_info["processing_time"] = processing_time
+        debug_info["success"] = True
+        
+        return debug_info
+        
+    except Exception as e:
+        logger.error(f"🔍 DEBUG: Error processing PDF {file.filename}: {e}")
+        return {
+            "filename": file.filename,
+            "error": str(e),
+            "success": False
+        }
     try:
         collection_info = processor.qdrant_client.get_collection(COLLECTION_NAME)
         return {
