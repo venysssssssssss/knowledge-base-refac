@@ -850,196 +850,196 @@ class DocumentProcessor:
             f'🧠 Iniciando chunking estrutural inteligente para {filename}'
         )
         logger.info(f'📊 Tamanho do texto de entrada: {len(text)} caracteres')
+        
+        # Log do texto completo para debug
+        logger.info("=" * 80)
+        logger.info("TEXTO COMPLETO EXTRAÍDO:")
+        logger.info("=" * 80)
+        logger.info(text)
+        logger.info("=" * 80)
 
-        # 1. Limpeza e normalização avançada preservando estrutura
-        clean_text = self.advanced_text_cleaning_preserving_structure(text)
-        logger.info(f'🧹 Após limpeza estrutural: {len(clean_text)} caracteres')
+        try:
+            # 1. Limpeza e normalização avançada preservando estrutura
+            logger.info("🧹 Iniciando limpeza estrutural...")
+            clean_text = self.advanced_text_cleaning_preserving_structure(text)
+            logger.info(f'🧹 Após limpeza estrutural: {len(clean_text)} caracteres')
 
-        # 2. Detecção de estrutura hierárquica do documento
-        document_structure = self.detect_hierarchical_structure(clean_text)
-        logger.info(
-            f"📋 Estrutura detectada: {len(document_structure['sections'])} seções principais"
-        )
-
-        # 3. Criação de chunks com estratégia multi-nível
-        chunks = self.create_hierarchical_chunks(document_structure, filename)
-
-        # 4. Adição de chunks de contexto global
-        global_chunks = self.create_global_context_chunks(
-            clean_text, filename, len(chunks)
-        )
-        chunks.extend(global_chunks)
-
-        # 5. Validação final e otimização
-        optimized_chunks = self.optimize_chunks_for_retrieval(chunks)
-
-        logger.info(f'✅ Chunking concluído para {filename}:')
-        logger.info(f'   📊 {len(optimized_chunks)} chunks gerados')
-        logger.info(
-            f'   📏 Cobertura: {self.calculate_coverage(optimized_chunks, clean_text):.1f}% do documento'
-        )
-
-        if len(optimized_chunks) > 0:
-            avg_size = sum(len(c.text) for c in optimized_chunks) // len(
-                optimized_chunks
+            # 2. Detecção de estrutura hierárquica do documento
+            logger.info("📋 Detectando estrutura hierárquica...")
+            document_structure = self.detect_hierarchical_structure(clean_text)
+            logger.info(
+                f"📋 Estrutura detectada: {len(document_structure.get('sections', []))} seções principais"
             )
-            logger.info(f'   📝 Tamanho médio: {avg_size} caracteres/chunk')
-        else:
-            logger.warning('   ⚠️ Nenhum chunk válido foi gerado!')
+            
+            # Log da estrutura detectada
+            logger.info("🔍 DEBUG: Estrutura completa detectada:")
+            logger.info(f"🔍 DEBUG: Document structure type: {type(document_structure)}")
+            logger.info(f"🔍 DEBUG: Document structure keys: {document_structure.keys()}")
+            logger.info(f"🔍 DEBUG: Title: {document_structure.get('title', 'NO TITLE')}")
+            logger.info(f"🔍 DEBUG: Sections count: {len(document_structure.get('sections', []))}")
+            
+            for i, section in enumerate(document_structure.get('sections', [])[:5]):  # Log first 5 sections
+                logger.info(f"🔍 DEBUG: Section {i}: {section}")
+
+            # 3. Criação de chunks com estratégia multi-nível
+            logger.info("📦 Criando chunks hierárquicos...")
+            chunks = self.create_hierarchical_chunks(document_structure, filename)
+
+            if not chunks:
+                logger.warning("⚠️ Nenhum chunk criado pelo método hierárquico, tentando fallback...")
+                # Fallback para método básico
+                return self.fallback_text_chunking(clean_text, filename)
+
+            # 4. Adição de chunks de contexto global
+            logger.info("🌐 Criando chunks de contexto global...")
+            try:
+                global_chunks = self.create_global_context_chunks(
+                    clean_text, filename, len(chunks)
+                )
+                chunks.extend(global_chunks)
+                logger.info(f"✅ Added {len(global_chunks)} global context chunks")
+            except Exception as e:
+                logger.error(f"❌ Error creating global context chunks: {e}")
+
+            # 5. Validação final e otimização
+            logger.info("🔧 Otimizando chunks para recuperação...")
+            try:
+                optimized_chunks = self.optimize_chunks_for_retrieval(chunks)
+            except Exception as e:
+                logger.error(f"❌ Error optimizing chunks: {e}")
+                optimized_chunks = chunks  # Use original chunks if optimization fails
+
+            logger.info(f'✅ Chunking concluído para {filename}:')
+            logger.info(f'   📊 {len(optimized_chunks)} chunks gerados')
+            
+            if len(optimized_chunks) > 0:
+                coverage = self.calculate_coverage(optimized_chunks, clean_text)
+                logger.info(f'   📏 Cobertura: {coverage:.1f}% do documento')
+
+                avg_size = sum(len(c.text) for c in optimized_chunks) // len(optimized_chunks)
+                logger.info(f'   📝 Tamanho médio: {avg_size} caracteres/chunk')
+                
+                # Log de cada chunk criado
+                for i, chunk in enumerate(optimized_chunks):
+                    logger.info(f"📄 Chunk {i}: {chunk.chunk_id} - {len(chunk.text)} chars - {chunk.metadata.get('section_title', 'NO TITLE')}")
+            else:
+                logger.error('❌ CRÍTICO: Nenhum chunk válido foi gerado!')
+                return self.emergency_chunking(clean_text, filename)
+
+            return optimized_chunks
+
+        except Exception as e:
+            logger.error(f"❌ ERRO CRÍTICO no chunking estrutural: {e}")
+            logger.error(f"❌ Tentando chunking de emergência...")
+            return self.emergency_chunking(text, filename)
+
+    def fallback_text_chunking(self, text: str, filename: str) -> List[DocumentChunk]:
+        """Chunking básico como fallback"""
+        logger.info("🆘 Executing fallback text chunking")
+        
+        try:
+            chunks = []
+            chunk_size = 1000
+            overlap = 200
+            
+            for i in range(0, len(text), chunk_size - overlap):
+                chunk_text = text[i:i + chunk_size]
+                if len(chunk_text.strip()) >= 100:
+                    chunk = DocumentChunk(
+                        chunk_id=f'{filename}_fallback_{i//chunk_size:03d}',
+                        text=chunk_text,
+                        embedding=[],
+                        metadata={
+                            'filename': filename,
+                            'section_title': f'Fallback Chunk {i//chunk_size}',
+                            'section_type': 'fallback',
+                            'section_index': i//chunk_size,
+                            'is_fallback': True,
+                            'keywords': [],
+                            'topics': ['fallback'],
+                            'context_summary': 'Chunk criado via fallback básico',
+                        },
+                    )
+                    chunks.append(chunk)
+                    logger.info(f"✅ Fallback chunk created: {len(chunk_text)} chars")
+            
+            return chunks
+            
+        except Exception as e:
+            logger.error(f"❌ Error in fallback chunking: {e}")
             return []
 
-        return optimized_chunks
+    def emergency_chunking(self, text: str, filename: str) -> List[DocumentChunk]:
+        """Chunking de emergência - último recurso"""
+        logger.info("🚨 EMERGENCY CHUNKING ACTIVATED")
+        
+        try:
+            # Criar pelo menos um chunk com todo o texto
+            emergency_chunk = DocumentChunk(
+                chunk_id=f'{filename}_emergency_001',
+                text=text[:2000],  # Limitar para evitar chunks gigantes
+                embedding=[],
+                metadata={
+                    'filename': filename,
+                    'section_title': 'Emergency Complete Document',
+                    'section_type': 'emergency',
+                    'section_index': 0,
+                    'is_emergency': True,
+                    'keywords': ['emergency'],
+                    'topics': ['emergency'],
+                    'context_summary': 'Chunk de emergência com documento completo',
+                },
+            )
+            
+            logger.info(f"🚨 Emergency chunk created: {len(emergency_chunk.text)} chars")
+            return [emergency_chunk]
+            
+        except Exception as e:
+            logger.error(f"❌ FALHA CRÍTICA no emergency chunking: {e}")
+            return []
 
-    def advanced_text_cleaning_preserving_structure(self, text: str) -> str:
-        """Limpeza avançada que preserva a estrutura semântica do documento"""
-        logger.info('🧹 Iniciando limpeza preservando estrutura...')
+    def generate_keywords_summary(self, text: str) -> str:
+        """Gera resumo de palavras-chave e tópicos"""
+        try:
+            keywords = self.extract_keywords_from_text(text)
 
-        # 1. Normalizar encoding e caracteres problemáticos
-        text = text.encode('utf-8', errors='ignore').decode('utf-8')
+            categorized_keywords = {
+                'Solicitantes': ['titular', 'procurador', 'curador', 'tutor'],
+                'Documentos': [
+                    'cpf',
+                    'rg',
+                    'certidão',
+                    'formulário',
+                    'assinatura',
+                ],
+                'Procedimentos': [
+                    'alteração',
+                    'atualização',
+                    'validação',
+                    'registro',
+                ],
+                'Prazos': ['dias', 'úteis', 'horas', 'prazo'],
+                'Sistemas': ['zendesk', 'sisprev', 'mumps', 'sistema'],
+                'Canais': ['correio', 'email', 'formulário', 'site'],
+            }
 
-        # 2. Preservar quebras de seção importantes
-        text = re.sub(
-            r'(#{1,6}\s+[^\n]+)', r'\n\1\n', text
-        )  # Headers Markdown
-        text = re.sub(
-            r'(\d+\.\s+[A-Z][^\n]+)', r'\n\1\n', text
-        )  # Seções numeradas
+            summary_parts = ['PRINCIPAIS CATEGORIAS E TERMOS:\n']
 
-        # 3. Corrigir caracteres com problemas de encoding
-        encoding_fixes = {
-            'Alterao': 'Alteração',
-            'Capitalizao': 'Capitalização',
-            'Informaes': 'Informações',
-            'Solicitao': 'Solicitação',
-            'Identificao': 'Identificação',
-            'Manifestao': 'Manifestação',
-            'Orientao': 'Orientação',
-            'Concluso': 'Conclusão',
-            'Atualizao': 'Atualização',
-            'Incluso': 'Inclusão',
-            'Expediao': 'Expedição',
-            'Aplicao': 'Aplicação',
-            'Validao': 'Validação',
-            'Autenticao': 'Autenticação',
-            'Manifestaes': 'Manifestações',
-            'Orientaes': 'Orientações',
-            'Solicitaes': 'Solicitações',
-            'Procurao': 'Procuração',
-            'Telefone/E-mail': 'Telefone / E-mail',
-            'amp;': '&',
-        }
+            for category, category_keywords in categorized_keywords.items():
+                found_keywords = [
+                    k
+                    for k in keywords
+                    if any(ck in k.lower() for ck in category_keywords)
+                ]
+                if found_keywords:
+                    summary_parts.append(
+                        f"{category}: {', '.join(found_keywords[:8])}"
+                    )
 
-        for wrong, correct in encoding_fixes.items():
-            text = text.replace(wrong, correct)
-
-        # 4. Normalizar espaçamentos mantendo estrutura
-        text = re.sub(r'\n{4,}', '\n\n\n', text)  # Max 3 quebras
-        text = re.sub(r' {3,}', '  ', text)  # Max 2 espaços
-
-        # 5. Garantir pontuação adequada
-        text = re.sub(
-            r'([a-zA-Z])(\n#{1,6})', r'\1.\n\2', text
-        )  # Ponto antes de headers
-
-        logger.info(
-            f'🧹 Limpeza concluída: {len(encoding_fixes)} correções aplicadas'
-        )
-        return text.strip()
-
-    def detect_hierarchical_structure(self, text: str) -> Dict[str, Any]:
-        """Detecta a estrutura hierárquica completa do documento"""
-        logger.info('📋 Detectando estrutura hierárquica...')
-
-        lines = text.split('\n')
-        structure = {
-            'title': '',
-            'sections': [],
-            'metadata': {
-                'total_lines': len(lines),
-                'estimated_reading_time': len(text) // 1000,  # ~1000 chars/min
-                'document_type': 'manual',
-            },
-        }
-
-        current_section = None
-        current_subsection = None
-        section_patterns = [
-            (r'^#{1,2}\s+(.+)', 'main_section', 1),
-            (r'^#{3,4}\s+(.+)', 'subsection', 2),
-            (r'^(\d+)\.\s+(.+)', 'numbered_section', 1),
-            (r'^([a-z])\)\s+(.+)', 'lettered_subsection', 2),
-            (r'^([A-Z][A-Z\s]{3,}):?\s*$', 'emphasis_section', 1),
-            (r'^(.+):$', 'colon_section', 2),
-        ]
-
-        for line_num, line in enumerate(lines):
-            line = line.strip()
-            if not line:
-                continue
-
-            # Detectar título principal
-            if line_num < 5 and (
-                'manual' in line.lower() or 'icatu' in line.lower()
-            ):
-                structure['title'] = line
-                continue
-
-            # Detectar seções
-            section_detected = False
-            for pattern, section_type, level in section_patterns:
-                match = re.match(pattern, line, re.IGNORECASE)
-                if match:
-                    if level == 1:  # Seção principal
-                        if current_section:
-                            structure['sections'].append(current_section)
-                        current_section = {
-                            'title': match.group(1)
-                            if len(match.groups()) == 1
-                            else match.group(2),
-                            'type': section_type,
-                            'level': level,
-                            'content': [],
-                            'subsections': [],
-                            'start_line': line_num,
-                            'keywords': [],
-                            'topics': [],
-                        }
-                        current_subsection = None
-                    elif level == 2 and current_section:  # Subseção
-                        if current_subsection:
-                            current_section['subsections'].append(
-                                current_subsection
-                            )
-                        current_subsection = {
-                            'title': match.group(1)
-                            if len(match.groups()) == 1
-                            else match.group(2),
-                            'type': section_type,
-                            'level': level,
-                            'content': [],
-                            'start_line': line_num,
-                            'keywords': [],
-                            'topics': [],
-                        }
-                    section_detected = True
-                    break
-
-            if not section_detected:
-                # Adicionar conteúdo à seção/subseção atual
-                if current_subsection:
-                    current_subsection['content'].append(line)
-                elif current_section:
-                    current_section['content'].append(line)
-
-        # Finalizar última seção
-        if current_subsection and current_section:
-            current_section['subsections'].append(current_subsection)
-        if current_section:
-            structure['sections'].append(current_section)
-
-        # Enriquecer seções com metadados
-        for section in structure['sections']:
-            section['keywords'] = self.extract_section_keywords(section)
+            return '\n'.join(summary_parts)
+        except Exception as e:
+            logger.error(f"❌ Error generating keywords summary: {e}")
+            return "Erro ao gerar resumo de palavras-chave"
             section['topics'] = self.extract_section_topics(section)
             section['end_line'] = (
                 section['start_line']
