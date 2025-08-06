@@ -151,7 +151,7 @@ logger = logging.getLogger(__name__)
 
 # Configuration
 QDRANT_URL = 'http://qdrant:6333'
-COLLECTION_NAME = 'knowledge_base_v2'
+COLLECTION_NAME = 'knowledge_base_v3'
 # EMBEDDING_MODEL = "sentence-transformers/all-mpnet-base-v2"  # Atual - bom para semântica geral
 EMBEDDING_MODEL = 'sentence-transformers/paraphrase-multilingual-mpnet-base-v2'  # MELHOR para português brasileiro
 CHUNK_SIZE = 1024  # REDUZIDO para gerar mais chunks menores e específicos
