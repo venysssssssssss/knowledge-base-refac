@@ -187,7 +187,7 @@ async def query_with_full_context(request: FullContextQueryRequest):
     para fornecer respostas mais completas e precisas.
     """
     start_time = time.time()
-    
+
     # Usar instruções específicas para contexto completo se não fornecidas
     if not request.instructions:
         request.instructions = """
@@ -205,16 +205,16 @@ async def query_with_full_context(request: FullContextQueryRequest):
         
         Responda de forma profissional e precisa, como um especialista em processos ICATU.
         """
-    
+
     # Formatar prompt otimizado para contexto completo
     prompt = format_full_context_prompt(
-        request.question, 
-        request.full_document_topics, 
-        request.instructions
+        request.question, request.full_document_topics, request.instructions
     )
-    
+
     try:
-        async with httpx.AsyncClient(timeout=60.0) as client:  # Timeout maior para contexto completo
+        async with httpx.AsyncClient(
+            timeout=60.0
+        ) as client:  # Timeout maior para contexto completo
             payload = {
                 'model': MODEL_NAME,
                 'prompt': prompt,
@@ -241,16 +241,21 @@ async def query_with_full_context(request: FullContextQueryRequest):
                 )
             processing_time = time.time() - start_time
             tokens_used = len(answer.split()) * 1.3  # Estimativa simples
-            
-            inference_logger.info(f'Full context query processed in {processing_time:.2f}s')
-            
+
+            inference_logger.info(
+                f'Full context query processed in {processing_time:.2f}s'
+            )
+
             return QueryResponse(
                 answer=answer,
                 tokens_used=int(tokens_used),
                 processing_time=processing_time,
             )
     except httpx.TimeoutException:
-        raise HTTPException(status_code=504, detail='Request timeout - try with shorter context')
+        raise HTTPException(
+            status_code=504,
+            detail='Request timeout - try with shorter context',
+        )
     except Exception as e:
         inference_logger.error(f'Full context generation error: {e}')
         raise HTTPException(
@@ -267,14 +272,39 @@ def format_mistral_prompt(
     """
     context_chunks = context_chunks or []
     default_instructions = """
-    Você é um assistente de documentos preciso e confiável. 
-    Responda à pergunta EXCLUSIVAMENTE com base no contexto fornecido abaixo.
-    Não invente informações, não extrapole, não utilize conhecimento externo.
-    Se a resposta não estiver claramente no contexto, diga: "A informação solicitada não está disponível nos documentos fornecidos."
+    Você é um assistente virtual especializado da Icatu Capitalização e Vida, designado exclusivamente para auxiliar os agentes de atendimento do SAC (Serviço de Atendimento ao Consumidor).
+
+Seu papel é fornecer respostas precisas, claras e completas com base exclusiva nas informações presentes nos documentos fornecidos no contexto.
+
+Siga rigidamente as diretrizes abaixo:
+
+1. Use apenas informações do contexto fornecido:
+   Nunca use conhecimento externo, suposições ou referências genéricas. Todas as respostas devem ser baseadas unicamente no conteúdo recebido como contexto. Se a informação solicitada não estiver claramente presente, responda:
+   "A informação solicitada não está disponível nos documentos fornecidos."
+
+2. Compreensão de palavras-chave:
+   Interprete com atenção as palavras-chave da pergunta feita pelo agente. Utilize a melhor correspondência semântica possível entre a pergunta e o conteúdo disponível para fornecer uma resposta 100% alinhada ao que foi solicitado.
+
+3. Responda sempre como assistente do agente SAC, nunca ao cliente final:
+   Toda comunicação deve ser direcionada aos agentes, ajudando-os a resolver dúvidas ou atender clientes com eficiência.
+
+4. Formato da resposta:
+   - Sempre em português do Brasil, de forma profissional e estruturada.
+   - Dê respostas completas e passo a passo quando aplicável.
+   - Utilize formatação clara, como listas ou seções, para facilitar a leitura e aplicação.
+
+5. Quando não houver resposta exata:
+   - Forneça a informação mais próxima e relevante que possa ajudar, desde que esteja contida no contexto.
+   - Nunca invente, assuma ou preencha lacunas com "bom senso" — apenas com base nos documentos.
+
+6. Nunca redirecione para outro canal de atendimento:
+   O agente é o atendimento. Seu trabalho é capacitá-lo com todas as informações necessárias para resolver a demanda do cliente.
+
+Seu objetivo é fornecer respostas eficientes e totalmente embasadas, sempre com base nos dados disponíveis e com atenção total à pergunta feita."
     """
 
     # Use instruções personalizadas se fornecidas
-    final_instructions = instructions if instructions else default_instructions
+    final_instructions = default_instructions
 
     if context_chunks:
         context = '\n'.join(context_chunks)
@@ -559,22 +589,24 @@ def format_full_context_prompt(
     
     Responda como um especialista em processos ICATU, de forma profissional e precisa.
     """
-    
+
     # Use instruções personalizadas se fornecidas
     final_instructions = instructions if instructions else default_instructions
-    
+
     # Verificar se o contexto não está vazio
     if not full_document_content or len(full_document_content.strip()) == 0:
         return f'<s>[INST] {question}\n\nObs: Nenhum contexto do manual foi fornecido. [/INST]'
-    
+
     # Truncar contexto se for muito longo (mantendo as partes mais importantes)
     max_context_length = 6000  # Limite para evitar overflow
     if len(full_document_content) > max_context_length:
         # Priorizar início e fim do documento, que geralmente contém informações importantes
-        first_part = full_document_content[:max_context_length//2]
-        last_part = full_document_content[-max_context_length//2:]
-        full_document_content = f"{first_part}\n\n[... CONTEÚDO TRUNCADO ...]\n\n{last_part}"
-    
+        first_part = full_document_content[: max_context_length // 2]
+        last_part = full_document_content[-max_context_length // 2 :]
+        full_document_content = (
+            f'{first_part}\n\n[... CONTEÚDO TRUNCADO ...]\n\n{last_part}'
+        )
+
     prompt = f"""<s>[INST] {final_instructions}
 
 MANUAL COMPLETO ICATU - ALTERAÇÃO CADASTRAL:
@@ -583,7 +615,7 @@ MANUAL COMPLETO ICATU - ALTERAÇÃO CADASTRAL:
 PERGUNTA DO USUÁRIO: {question}
 
 Responda com base EXCLUSIVAMENTE nas informações do manual acima. [/INST]"""
-    
+
     return prompt
 
 
