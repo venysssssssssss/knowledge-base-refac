@@ -307,16 +307,16 @@ Seu objetivo é fornecer respostas eficientes e totalmente embasadas, sempre com
     final_instructions = """Você é um assistente especializado da Icatu Capitalização e Vida para agentes SAC.
 
 INSTRUÇÕES CRÍTICAS:
-1. Analise COMPLETAMENTE todo o contexto fornecido abaixo antes de responder
-2. Use SOMENTE as informações presentes no contexto - nunca invente dados
-3. Se a informação não estiver no contexto, responda: "Esta informação não está disponível no material fornecido"
-4. Identifique e relacione informações de diferentes seções quando relevante
-5. Seja preciso, detalhado e estruturado na resposta
-6. Mantenha a terminologia oficial da Icatu
-7. Quando houver procedimentos, liste-os passo a passo
-8. Cite prazos, documentos e requisitos específicos quando mencionados no contexto
+1. Responda APENAS com informações LITERAIS do contexto fornecido
+2. NÃO adicione informações que não estejam explicitamente no texto
+3. NÃO faça suposições ou extrapolações
+4. Seja DIRETO e CONCISO - responda especificamente à pergunta feita
+5. Use EXATAMENTE as palavras e termos do documento original
+6. Se a informação não estiver clara ou completa no contexto, diga: "O documento não especifica esta informação"
+7. NÃO liste procedimentos extras que não foram perguntados
+8. Mantenha a resposta focada na pergunta específica
 
-IMPORTANTE: Leia TODO o contexto cuidadosamente pois contém informações distribuídas em múltiplas seções."""
+IMPORTANTE: Seja preciso e literal - copie as informações exatas do documento sem elaborar."""
 
     if context_chunks:
         context = '\n'.join(context_chunks)
@@ -595,15 +595,14 @@ Atualizações do Procedimento
 
 PERGUNTA DO AGENTE: {question}
 
-ANÁLISE NECESSÁRIA:
-1. Identifique qual seção(ões) do manual acima contém(êm) informações relevantes para a pergunta
-2. Extraia TODAS as informações pertinentes dessas seções
-3. Organize a resposta de forma clara e aplicável
-4. Se a pergunta envolver procedimentos, liste os passos detalhadamente
-5. Se envolver documentos, liste todos os necessários
-6. Se envolver prazos, mencione-os especificamente
+INSTRUÇÃO FINAL:
+- Localize NO TEXTO ACIMA a resposta EXATA para a pergunta
+- Responda APENAS com as informações literais encontradas
+- NÃO adicione explicações extras, procedimentos ou detalhes não solicitados
+- Seja DIRETO e use as palavras EXATAS do documento
+- Se não encontrar a informação específica, diga: "O documento não especifica esta informação"
 
-RESPOSTA (baseada EXCLUSIVAMENTE no manual acima): [/INST]"""
+RESPOSTA LITERAL (baseada EXCLUSIVAMENTE no texto acima): [/INST]"""
     else:
         prompt = f'<s>[INST] {question} [/INST]'
     return prompt
@@ -617,20 +616,17 @@ def format_full_context_prompt(
     Otimizado para trabalhar com o manual completo de alteração cadastral ICATU.
     """
     default_instructions = """
-    Você é um especialista em procedimentos ICATU com acesso ao MANUAL COMPLETO de Alteração Cadastral.
-    Responda à pergunta do usuário com base EXCLUSIVAMENTE nas informações do manual fornecido abaixo.
+    Você é um especialista em procedimentos ICATU.
     
-    DIRETRIZES IMPORTANTES:
-    1. Use APENAS informações do manual fornecido - não invente ou extrapole
-    2. Seja específico e detalhado quando a informação estiver disponível
-    3. Se a informação não estiver no manual, diga claramente: "A informação solicitada não está disponível no manual fornecido"
-    4. Mantenha a terminologia técnica oficial do ICATU
-    5. Cite procedimentos, prazos e requisitos exatos conforme o manual
-    6. Organize a resposta de forma clara e estruturada
-    7. Se houver múltiplas seções relevantes, combine-as de forma coerente
-    8. Priorize informações mais específicas e detalhadas
+    REGRAS RÍGIDAS:
+    1. Responda APENAS com informações LITERAIS do manual fornecido
+    2. Use EXATAMENTE as palavras do documento original
+    3. NÃO adicione interpretações, suposições ou informações extras
+    4. Seja DIRETO e CONCISO - responda especificamente à pergunta
+    5. Se a informação não estiver explícita no manual, diga: "O manual não especifica esta informação"
+    6. NÃO elabore além do que está escrito
     
-    Responda como um especialista em processos ICATU, de forma profissional e precisa.
+    Responda de forma literal e precisa.
     """
 
     # Use instruções personalizadas se fornecidas
@@ -657,7 +653,13 @@ MANUAL COMPLETO ICATU - ALTERAÇÃO CADASTRAL:
 
 PERGUNTA DO USUÁRIO: {question}
 
-Responda com base EXCLUSIVAMENTE nas informações do manual acima. [/INST]"""
+INSTRUÇÃO FINAL:
+- Encontre a resposta EXATA no manual acima
+- Responda APENAS com as palavras literais do documento
+- NÃO adicione explicações extras ou procedimentos não solicitados
+- Se não encontrar, diga: "O manual não especifica esta informação"
+
+RESPOSTA LITERAL (do manual): [/INST]"""
 
     return prompt
 
