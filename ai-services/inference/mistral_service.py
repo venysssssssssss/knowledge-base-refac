@@ -278,7 +278,259 @@ def format_mistral_prompt(
 
     if context_chunks:
         context = '\n'.join(context_chunks)
-        prompt = f"""<s>[INST] {final_instructions}\n\nContexto:\n{context}\n\nPergunta: {question}\n\nResponda apenas com base nas informações do contexto fornecido. [/INST]"""
+        prompt = f"""<s>[INST] {final_instructions}\n\nContexto:\n1. Quem Pode Solicitar
+Somente o titular da apólice pode solicitar alterações cadastrais. Para inclusão de nome
+social, também é permitido o pedido por Procurador, Curador ou Tutor.
+2. Tipos de Alterações Cadastrais
+a) Documento de Identificação / Nome / Estado Civil
+Documentos exigidos:
+Nome: cópia do documento de identificação com foto.
+Estado Civil: certidão de casamento, averbação de separação/divórcio ou certidão de óbito.
+Documento de identificação: cópia simples.
+Importante:
+Erros simples (ex: Ana Silvia → Ana Silva) podem ser corrigidos diretamente no sistema.
+Se o cliente alegar erro na proposta, seguir procedimento de reclamação de implantação.
+b) Nome Social
+Base legal: Ofício-Circular nº 001/2024/DIR2/SUSEP.
+Não é necessário documento comprobatório.
+Pode ser solicitado a qualquer momento.
+Sem restrições de nomes.
+Se o cliente tiver Previdência e Vida, realizar transferência assistida para o ramal: TRANS
+NOME SOCIAL V&P.
+Nome social não aparecerá:
+No site “Área do Cliente”.
+Em comunicações de marketing.
+Nos boletos (apenas nome de registro).
+Será incluído:
+Propostas, fichas de cadastro, apólices, certificados e títulos de capitalização.
+Registro:
+Tipo de Motivo: Solicitação
+Motivo: Atualização Cadastral
+Razão: Nome Social
+Ação Tomada: Realizada ou Pendente
+c) Endereço / Telefone / E-mail
+Alteração feita diretamente no sistema.
+Registro automático é gerado.
+Se houver erro no sistema, registrar protocolo pendente e incluir observação.
+Não é possível ter endereços de correspondência e cobrança diferentes.
+Telefone celular deve ser marcado como tipo “Móvel”.
+Corrigir proativamente se o tipo estiver incorreto.
+d) CPF / Data de Nascimento
+Seguir os mesmos critérios de validação e registro.
+e) Interditado / Impossibilitado de Assinar
+Procedimentos específicos devem ser seguidos (detalhes provavelmente nos próximos
+arquivos).
+3. Envio de Documentos
+Parceiros Rio Grande (Banrisul)
+E-mail: formularioscap@riograndeseguradora.com.br
+Correio:
+Rua Siqueira Campos, 1163 – 6º andar
+Porto Alegre – RS
+CEP: 90010-001
+Agências Banrisul
+Outros Parceiros
+E-mail: documentos@capitalizacao.com
+Correio:
+Caixa Postal 6577
+Rio de Janeiro – RJ
+CEP: 20030-970
+Observação: Documentos que exigem reconhecimento de firma devem ser enviados
+obrigatoriamente pelos correios.
+4. Registro no Sistema
+Tipo de Motivo: Solicitação
+Motivo: Atualização Cadastral Cliente
+Razão: CPF / Data de Nascimento / Nome Social / Endereço / E-mail / Nome / RG /
+Telefone / Estado Civil
+Ação Tomada: Concluído / Pendente / Não Realizado
+Prazo: 07 dias úteis
+5. Alteração de CPF / Data de Nascimento
+Confirmar o dado correto com o cliente.
+Validar no site da Receita Federal:
+Se os dados estiverem corretos:
+Verificar se os campos da aba “Cliente” e “Documentos” (CPF e RG: número, órgão expedidor
+e data de expedição) estão preenchidos.
+Se sim, registrar manifestação como Alteração Cadastral Pendente, indicando no protocolo:
+Que a consulta à Receita foi feita.
+Data e horário da consulta.
+Se não, orientar o envio de:
+Formulário de alteração.
+CPF.
+Documento de identificação (RG, certidão de nascimento, passaporte etc.).
+6. Interditado / Impossibilitado de Assinar
+a) Interditado
+Documentos necessários:
+Cópia do RG e CPF.
+Curatela do curador nomeado.
+Formulário: Alteração de Dados.
+Registro: Ação Tomada: Não Realizada.
+Assinatura:
+Se possui discernimento: assinatura do proponente e/ou curador.
+Se não possui discernimento: apenas o curador assina.
+b) Impossibilitado de Assinar
+Com coleta de impressão digital:
+Inserir a digital do cliente no formulário.
+Assinatura de:
+Uma pessoa identificada que assina a pedido do cliente.
+Duas testemunhas.
+Sem coleta de impressão digital:
+Assinatura do representante legal ou procurador.
+Documentos necessários:
+Cópia de documento de identificação do representante (CNH, RG, CTPS ou passaporte).
+Procuração.
+7. Envio de Documentos (Reforço)
+Banrisul: Clique aqui
+Demais parceiros: Clique aqui
+8. Registro no Sistema (Reforço)
+Tipo de Motivo: Solicitação
+Motivo: Atualização Cadastral Cliente
+Razão: CPF / Data de Nascimento / Nome Social / Endereço / E-mail / Nome / RG /
+Telefone / Estado Civil
+Ação Tomada: Concluído / Pendente / Não Realizado
+Prazo: 07 dias úteis
+9. Quem Pode Solicitar
+Titular maior de idade.
+Responsável legal ou tutor, no caso de titular menor de idade.
+Procurador, curador ou tutor, conforme o cenário.
+10. Tipos de Alterações e Procedimentos Específicos
+a) Clientes do Parceiro PICPAY
+A alteração não se reflete no app PICPAY.
+O cliente deve atualizar os dados diretamente no aplicativo.
+b) Documento de Identificação / Nome / Estado Civil
+Documentos necessários:
+Nome: cópia do documento com foto.
+Estado Civil: certidão de casamento, averbação de separação/divórcio ou certidão de óbito.
+Importante:
+Erros simples (ex: Ana Silvia → Ana Silva): alterar diretamente no sistema.
+Alegação de preenchimento correto na proposta: seguir fluxo de reclamação de
+implantação.
+Para menores de idade, a solicitação deve ser feita via formulário específico.
+c) Endereço / Telefone / E-mail
+Cenários:
+Dados atualizados no sistema, mas desatualizados no Zendesk:
+Copiar os dados do sistema para o Zendesk.
+Se houver erro ao gravar, fazer uma pequena alteração no sistema (ex: “Rua” → “R.”) para
+forçar a sincronização.
+Cliente com telefone sem prefixo 9:
+Atualizar conforme padrão nacional.
+Não é necessário realizar identificação positiva ou autenticação de segurança nesses casos.
+d) CPF / Data de Nascimento / Nome Social
+Seguir os mesmos critérios já descritos na seção de Capitalização.
+e) Cliente Reprovado com Advertência
+Não realizar fluxo de Token/Rating/Score.
+Orientar o cliente a seguir uma das opções:
+Área do Cliente (exceto Sicredi e HDI).
+Formulário com assinatura digital (ICP-Brasil ou Gov.br).
+Formulário com firma reconhecida.
+11. Envio de Documentos
+As formas de envio variam conforme o parceiro. O manual pode conter um anexo ou link
+com as opções atualizadas (ex: “Clique aqui para consultar as opções disponíveis”).
+12. Registro no Sistema
+Marca
+Forma de Contato
+Tipo de Público
+Tipo de Relação
+ID Positiva
+Linha de Negócio: Automático
+Parceiro: Automático
+Produto localizado Previdência: Automático
+Produto Texto: Automático
+Tipo de Contato: Solicitação
+Motivo do Contato: Alteração
+Submotivo de Contato 1 e 2: conforme a solicitação
+Número do Certificado: Automático
+Aceitou a alteração cadastral?
+Resultado da Manifestação
+13. Prazos
+Alterações refletem no sistema e no Zendesk em até 24 horas.
+Prazo geral para conclusão da solicitação: 07 dias úteis.
+14. Cliente com Telefone Celular sem Prefixo 9
+Verificação: Se o número de celular não possui o dígito 9, ele deve ser incluído.
+Onde alterar:
+Para um único cliente: diretamente no Zendesk.
+Para múltiplos clientes: diretamente no sistema do produto.
+Não é necessário realizar identificação positiva ou autenticação de segurança.
+15. Cliente com Dados Atualizados no Sistema, mas Desatualizados no
+Zendesk
+Ação: Copiar os dados corretos do sistema para o Zendesk.
+Se houver erro ao gravar:
+Realizar uma pequena alteração no sistema (ex: abreviações como “Rua” → “R.”).
+Isso força a sincronização com a base de dados.
+Resultado: A alteração será refletida automaticamente no Zendesk.
+16. Cliente com Dados Desatualizados (Sistema e Zendesk) sem
+Advertência
+Fluxo necessário: Token/Rating/Score (autenticação).
+Se aprovado:
+Realizar a alteração diretamente no Zendesk.
+Se o app não permitir alteração:
+Verificar se há:
+Mais de um cadastro com datas de nascimento diferentes.
+Plano de dependente vinculado ao CPF.
+Se sim, seguir os procedimentos específicos para alteração de data de nascimento ou CPF do
+dependente.
+Se não, realizar a alteração diretamente no sistema do produto.
+Prazos para refletir a alteração:
+Zendesk: até 1 hora.
+Sistema do produto: até 24 horas.
+17. Alteração de CPF (Detalhamento)
+Não realizar fluxo de Token/Rating/Score.
+Confirmar o dado com o cliente.
+Validar no site da Receita Federal.
+Ações conforme o sistema:
+MUMPS/SISVIDA: inserir print da Receita no ticket e registrar manifestação como pendente.
+TELEMARKETING/SISCAP: orientar o cliente a contatar a Central de Capitalização.
+PGBL/SISPREV:
+Se campos de identificação estiverem preenchidos: registrar manifestação como pendente.
+Se não: solicitar formulário, CPF e documento de identificação.
+Observação: A alteração de data de nascimento é feita apenas nas informações cadastrais,
+não no certificado.
+18. Alteração de Data de Nascimento
+Procedimento Geral:
+Não realizar fluxo de Token/Rating/Score.
+Confirmar o dado correto com o cliente.
+Validar os dados no site da Receita Federal.
+Ações conforme o sistema:
+MUMPS / SISVIDA:
+Inserir print da Receita Federal no ticket.
+Registrar manifestação como Alteração Cadastral Pendente, independentemente do status
+do certificado (ativo ou cancelado).
+TELEMARKETING / SISCAP:
+Orientar o cliente a entrar em contato com a Central de Capitalização.
+PGBL / SISPREV:
+Verificar se os campos de documento de identificação, data de expedição e natureza do
+documento estão preenchidos.
+Se não estiverem preenchidos: solicitar envio de formulário, CPF e documento de
+identificação (RG, certidão de nascimento, passaporte etc.).
+Se estiverem preenchidos: inserir print da Receita Federal no ticket e realizar a alteração
+diretamente no SISPREV.
+Prazo para refletir a alteração no site e Zendesk: até 24 horas.
+Observação:
+A alteração de data de nascimento é feita apenas nas informações cadastrais do cliente.
+Mesmo que o cliente tenha um certificado de risco vinculado ao de acumulação, isso não
+afeta o capital segurado.
+Finalização do Registro
+Para todos os cenários, o registro deve conter:
+Marca
+Forma de Contato
+Tipo de Público
+Tipo de Relação
+ID Positiva
+Linha de Negócio: Automático
+Parceiro: Automático
+Produto localizado Previdência: Automático
+Produto Texto: Automático
+Tipo de Contato: Solicitação
+Motivo do Contato: Alteração
+Submotivo de Contato 1 e 2: conforme a solicitação
+Número do Certificado: Automático
+Aceitou a alteração cadastral?
+Resultado da Manifestação
+Atualizações do Procedimento
+13/01/2025: Atualização geral dos procedimentos.
+11/03/2025: Atualização sobre sincronização entre sistema e Zendesk
+
+Pergunta: {question}
+
+Responda apenas com base nas informações do contexto fornecido. [/INST]"""
     else:
         prompt = f'<s>[INST] {question} [/INST]'
     return prompt
