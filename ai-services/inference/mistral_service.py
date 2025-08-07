@@ -304,13 +304,30 @@ Seu objetivo é fornecer respostas eficientes e totalmente embasadas, sempre com
     """
 
     # Use instruções personalizadas se fornecidas
-    final_instructions = default_instructions
+    final_instructions = """Você é um assistente especializado da Icatu Capitalização e Vida para agentes SAC.
+
+INSTRUÇÕES CRÍTICAS:
+1. Analise COMPLETAMENTE todo o contexto fornecido abaixo antes de responder
+2. Use SOMENTE as informações presentes no contexto - nunca invente dados
+3. Se a informação não estiver no contexto, responda: "Esta informação não está disponível no material fornecido"
+4. Identifique e relacione informações de diferentes seções quando relevante
+5. Seja preciso, detalhado e estruturado na resposta
+6. Mantenha a terminologia oficial da Icatu
+7. Quando houver procedimentos, liste-os passo a passo
+8. Cite prazos, documentos e requisitos específicos quando mencionados no contexto
+
+IMPORTANTE: Leia TODO o contexto cuidadosamente pois contém informações distribuídas em múltiplas seções."""
 
     if context_chunks:
         context = '\n'.join(context_chunks)
-        prompt = f"""<s>[INST] {final_instructions}\n\nContexto:\n1. Quem Pode Solicitar
+        prompt = f"""<s>[INST] {final_instructions}
+
+MANUAL COMPLETO ICATU - ALTERAÇÃO CADASTRAL:
+
+1. Quem Pode Solicitar
 Somente o titular da apólice pode solicitar alterações cadastrais. Para inclusão de nome
 social, também é permitido o pedido por Procurador, Curador ou Tutor.
+
 2. Tipos de Alterações Cadastrais
 a) Documento de Identificação / Nome / Estado Civil
 Documentos exigidos:
@@ -350,6 +367,7 @@ Seguir os mesmos critérios de validação e registro.
 e) Interditado / Impossibilitado de Assinar
 Procedimentos específicos devem ser seguidos (detalhes provavelmente nos próximos
 arquivos).
+
 3. Envio de Documentos
 Parceiros Rio Grande (Banrisul)
 E-mail: formularioscap@riograndeseguradora.com.br
@@ -366,6 +384,7 @@ Rio de Janeiro – RJ
 CEP: 20030-970
 Observação: Documentos que exigem reconhecimento de firma devem ser enviados
 obrigatoriamente pelos correios.
+
 4. Registro no Sistema
 Tipo de Motivo: Solicitação
 Motivo: Atualização Cadastral Cliente
@@ -373,6 +392,7 @@ Razão: CPF / Data de Nascimento / Nome Social / Endereço / E-mail / Nome / RG 
 Telefone / Estado Civil
 Ação Tomada: Concluído / Pendente / Não Realizado
 Prazo: 07 dias úteis
+
 5. Alteração de CPF / Data de Nascimento
 Confirmar o dado correto com o cliente.
 Validar no site da Receita Federal:
@@ -386,6 +406,7 @@ Se não, orientar o envio de:
 Formulário de alteração.
 CPF.
 Documento de identificação (RG, certidão de nascimento, passaporte etc.).
+
 6. Interditado / Impossibilitado de Assinar
 a) Interditado
 Documentos necessários:
@@ -407,9 +428,11 @@ Assinatura do representante legal ou procurador.
 Documentos necessários:
 Cópia de documento de identificação do representante (CNH, RG, CTPS ou passaporte).
 Procuração.
+
 7. Envio de Documentos (Reforço)
 Banrisul: Clique aqui
 Demais parceiros: Clique aqui
+
 8. Registro no Sistema (Reforço)
 Tipo de Motivo: Solicitação
 Motivo: Atualização Cadastral Cliente
@@ -417,10 +440,12 @@ Razão: CPF / Data de Nascimento / Nome Social / Endereço / E-mail / Nome / RG 
 Telefone / Estado Civil
 Ação Tomada: Concluído / Pendente / Não Realizado
 Prazo: 07 dias úteis
+
 9. Quem Pode Solicitar
 Titular maior de idade.
 Responsável legal ou tutor, no caso de titular menor de idade.
 Procurador, curador ou tutor, conforme o cenário.
+
 10. Tipos de Alterações e Procedimentos Específicos
 a) Clientes do Parceiro PICPAY
 A alteração não se reflete no app PICPAY.
@@ -451,9 +476,11 @@ Orientar o cliente a seguir uma das opções:
 Área do Cliente (exceto Sicredi e HDI).
 Formulário com assinatura digital (ICP-Brasil ou Gov.br).
 Formulário com firma reconhecida.
+
 11. Envio de Documentos
 As formas de envio variam conforme o parceiro. O manual pode conter um anexo ou link
 com as opções atualizadas (ex: “Clique aqui para consultar as opções disponíveis”).
+
 12. Registro no Sistema
 Marca
 Forma de Contato
@@ -470,15 +497,18 @@ Submotivo de Contato 1 e 2: conforme a solicitação
 Número do Certificado: Automático
 Aceitou a alteração cadastral?
 Resultado da Manifestação
+
 13. Prazos
 Alterações refletem no sistema e no Zendesk em até 24 horas.
 Prazo geral para conclusão da solicitação: 07 dias úteis.
+
 14. Cliente com Telefone Celular sem Prefixo 9
 Verificação: Se o número de celular não possui o dígito 9, ele deve ser incluído.
 Onde alterar:
 Para um único cliente: diretamente no Zendesk.
 Para múltiplos clientes: diretamente no sistema do produto.
 Não é necessário realizar identificação positiva ou autenticação de segurança.
+
 15. Cliente com Dados Atualizados no Sistema, mas Desatualizados no
 Zendesk
 Ação: Copiar os dados corretos do sistema para o Zendesk.
@@ -486,6 +516,7 @@ Se houver erro ao gravar:
 Realizar uma pequena alteração no sistema (ex: abreviações como “Rua” → “R.”).
 Isso força a sincronização com a base de dados.
 Resultado: A alteração será refletida automaticamente no Zendesk.
+
 16. Cliente com Dados Desatualizados (Sistema e Zendesk) sem
 Advertência
 Fluxo necessário: Token/Rating/Score (autenticação).
@@ -501,6 +532,7 @@ Se não, realizar a alteração diretamente no sistema do produto.
 Prazos para refletir a alteração:
 Zendesk: até 1 hora.
 Sistema do produto: até 24 horas.
+
 17. Alteração de CPF (Detalhamento)
 Não realizar fluxo de Token/Rating/Score.
 Confirmar o dado com o cliente.
@@ -513,6 +545,7 @@ Se campos de identificação estiverem preenchidos: registrar manifestação com
 Se não: solicitar formulário, CPF e documento de identificação.
 Observação: A alteração de data de nascimento é feita apenas nas informações cadastrais,
 não no certificado.
+
 18. Alteração de Data de Nascimento
 Procedimento Geral:
 Não realizar fluxo de Token/Rating/Score.
@@ -558,9 +591,19 @@ Atualizações do Procedimento
 13/01/2025: Atualização geral dos procedimentos.
 11/03/2025: Atualização sobre sincronização entre sistema e Zendesk
 
-Pergunta: {question}
+==== FIM DO MANUAL ====
 
-Responda apenas com base nas informações do contexto fornecido. [/INST]"""
+PERGUNTA DO AGENTE: {question}
+
+ANÁLISE NECESSÁRIA:
+1. Identifique qual seção(ões) do manual acima contém(êm) informações relevantes para a pergunta
+2. Extraia TODAS as informações pertinentes dessas seções
+3. Organize a resposta de forma clara e aplicável
+4. Se a pergunta envolver procedimentos, liste os passos detalhadamente
+5. Se envolver documentos, liste todos os necessários
+6. Se envolver prazos, mencione-os especificamente
+
+RESPOSTA (baseada EXCLUSIVAMENTE no manual acima): [/INST]"""
     else:
         prompt = f'<s>[INST] {question} [/INST]'
     return prompt
