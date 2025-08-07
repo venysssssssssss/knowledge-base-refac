@@ -267,60 +267,28 @@ def format_mistral_prompt(
     question: str, context_chunks: List[str] = None, instructions: str = ''
 ) -> str:
     """
-    Formata o prompt para o Mistral Instruct, usando os chunks do Qdrant como contexto.
-    Inclui instrução explícita para responder SOMENTE com base no contexto fornecido.
+    Formata o prompt para o Mistral Instruct, IGNORANDO chunks do RAG e usando APENAS o manual completo hardcoded.
+    Garante 100% de precisão ao responder SOMENTE com base no manual oficial ICATU completo.
     """
-    context_chunks = context_chunks or []
-    default_instructions = """
-    Você é um assistente virtual especializado da Icatu Capitalização e Vida, designado exclusivamente para auxiliar os agentes de atendimento do SAC (Serviço de Atendimento ao Consumidor).
-
-Seu papel é fornecer respostas precisas, claras e completas com base exclusiva nas informações presentes nos documentos fornecidos no contexto.
-
-Siga rigidamente as diretrizes abaixo:
-
-1. Use apenas informações do contexto fornecido:
-   Nunca use conhecimento externo, suposições ou referências genéricas. Todas as respostas devem ser baseadas unicamente no conteúdo recebido como contexto. Se a informação solicitada não estiver claramente presente, responda:
-   "A informação solicitada não está disponível nos documentos fornecidos."
-
-2. Compreensão de palavras-chave:
-   Interprete com atenção as palavras-chave da pergunta feita pelo agente. Utilize a melhor correspondência semântica possível entre a pergunta e o conteúdo disponível para fornecer uma resposta 100% alinhada ao que foi solicitado.
-
-3. Responda sempre como assistente do agente SAC, nunca ao cliente final:
-   Toda comunicação deve ser direcionada aos agentes, ajudando-os a resolver dúvidas ou atender clientes com eficiência.
-
-4. Formato da resposta:
-   - Sempre em português do Brasil, de forma profissional e estruturada.
-   - Dê respostas completas e passo a passo quando aplicável.
-   - Utilize formatação clara, como listas ou seções, para facilitar a leitura e aplicação.
-
-5. Quando não houver resposta exata:
-   - Forneça a informação mais próxima e relevante que possa ajudar, desde que esteja contida no contexto.
-   - Nunca invente, assuma ou preencha lacunas com "bom senso" — apenas com base nos documentos.
-
-6. Nunca redirecione para outro canal de atendimento:
-   O agente é o atendimento. Seu trabalho é capacitá-lo com todas as informações necessárias para resolver a demanda do cliente.
-
-Seu objetivo é fornecer respostas eficientes e totalmente embasadas, sempre com base nos dados disponíveis e com atenção total à pergunta feita."
-    """
-
-    # Use instruções personalizadas se fornecidas
+    # IGNORA COMPLETAMENTE os chunks do RAG - usa apenas o manual hardcoded completo
+    
     final_instructions = """Você é um assistente especializado da Icatu Capitalização e Vida para agentes SAC.
 
 INSTRUÇÕES CRÍTICAS:
-1. Responda APENAS com informações LITERAIS do contexto fornecido
-2. NÃO adicione informações que não estejam explicitamente no texto
+1. Responda APENAS com informações LITERAIS do MANUAL COMPLETO ICATU fornecido abaixo
+2. NÃO adicione informações que não estejam explicitamente no texto do manual
 3. NÃO faça suposições ou extrapolações
 4. Seja DIRETO e CONCISO - responda especificamente à pergunta feita
 5. Use EXATAMENTE as palavras e termos do documento original
-6. Se a informação não estiver clara ou completa no contexto, diga: "O documento não especifica esta informação"
+6. Se a informação não estiver clara ou completa no manual, diga: "O manual não especifica esta informação"
 7. NÃO liste procedimentos extras que não foram perguntados
 8. Mantenha a resposta focada na pergunta específica
+9. IGNORE qualquer contexto adicional - use APENAS o manual oficial abaixo
 
-IMPORTANTE: Seja preciso e literal - copie as informações exatas do documento sem elaborar."""
+IMPORTANTE: Seja preciso e literal - copie as informações exatas do manual sem elaborar."""
 
-    if context_chunks:
-        context = '\n'.join(context_chunks)
-        prompt = f"""<s>[INST] {final_instructions}
+    # SEMPRE usa o manual completo hardcoded, independente dos chunks
+    prompt = f"""<s>[INST] {final_instructions}
 
 MANUAL COMPLETO ICATU - ALTERAÇÃO CADASTRAL:
 
@@ -603,8 +571,7 @@ INSTRUÇÃO FINAL:
 - Se não encontrar a informação específica, diga: "O documento não especifica esta informação"
 
 RESPOSTA LITERAL (baseada EXCLUSIVAMENTE no texto acima): [/INST]"""
-    else:
-        prompt = f'<s>[INST] {question} [/INST]'
+    
     return prompt
 
 

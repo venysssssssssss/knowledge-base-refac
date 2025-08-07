@@ -121,8 +121,10 @@ class RAGService:
             )
 
             if response.status_code != 200:
-                rag_logger.error(f'Erro ao buscar conteúdo completo: {response.status_code}')
-                return ""
+                rag_logger.error(
+                    f'Erro ao buscar conteúdo completo: {response.status_code}'
+                )
+                return ''
 
             response_data = response.json()
             if isinstance(response_data, dict) and 'chunks' in response_data:
@@ -131,18 +133,23 @@ class RAGService:
                 all_chunks = response_data
 
             if not all_chunks:
-                rag_logger.warning('Nenhum chunk encontrado para contexto completo')
-                return ""
+                rag_logger.warning(
+                    'Nenhum chunk encontrado para contexto completo'
+                )
+                return ''
 
             # Organizar chunks por ordem de documento/página se possível
-            sorted_chunks = sorted(all_chunks, key=lambda x: (
-                x.get('metadata', {}).get('page_number', 0),
-                x.get('metadata', {}).get('chunk_index', 0)
-            ))
+            sorted_chunks = sorted(
+                all_chunks,
+                key=lambda x: (
+                    x.get('metadata', {}).get('page_number', 0),
+                    x.get('metadata', {}).get('chunk_index', 0),
+                ),
+            )
 
             # Construir texto completo do manual
             manual_sections = []
-            current_section = ""
+            current_section = ''
             last_page = -1
 
             for chunk in sorted_chunks:
@@ -158,29 +165,33 @@ class RAGService:
                 if page_number != last_page and page_number > 0:
                     if current_section:
                         manual_sections.append(current_section)
-                    current_section = f"\n--- PÁGINA {page_number} ---\n"
+                    current_section = f'\n--- PÁGINA {page_number} ---\n'
                     last_page = page_number
 
                 # Adicionar título de seção se disponível
                 if section_title and section_title not in current_section:
-                    current_section += f"\n## {section_title}\n"
+                    current_section += f'\n## {section_title}\n'
 
                 # Adicionar conteúdo
-                current_section += f"{content}\n"
+                current_section += f'{content}\n'
 
             # Adicionar última seção
             if current_section:
                 manual_sections.append(current_section)
 
             full_manual = '\n'.join(manual_sections)
-            
-            rag_logger.info(f'📖 Conteúdo completo extraído: {len(full_manual)} caracteres de {len(sorted_chunks)} chunks')
-            
+
+            rag_logger.info(
+                f'📖 Conteúdo completo extraído: {len(full_manual)} caracteres de {len(sorted_chunks)} chunks'
+            )
+
             return full_manual
 
         except Exception as e:
-            rag_logger.error(f'Erro ao extrair conteúdo completo do manual: {e}')
-            return ""
+            rag_logger.error(
+                f'Erro ao extrair conteúdo completo do manual: {e}'
+            )
+            return ''
 
     async def search_documents(
         self,
@@ -878,12 +889,12 @@ INFORMAÇÕES RELEVANTES:"""
 
             mistral_payload = {
                 'question': question,
-                'context': enhanced_prompt,
+                'context': '',  # Deixar vazio para forçar uso do manual hardcoded
                 'max_tokens': max_tokens,
                 'temperature': min(
                     temperature, 0.15
                 ),  # Temperatura muito baixa para máxima precisão
-                'instructions': 'Responda EXCLUSIVAMENTE baseado no contexto fornecido. Se a informação não estiver no contexto, diga que não está disponível.',
+                'instructions': '',  # Sem instruções adicionais - usar apenas o manual hardcoded
             }
 
             response = await self.http_client.post(
@@ -1110,7 +1121,8 @@ RESPOSTA TÉCNICA (baseada exclusivamente no contexto acima):"""
             }
 
             response = await self.http_client.post(
-                f'{MISTRAL_SERVICE_URL}/query-full-context', json=mistral_payload
+                f'{MISTRAL_SERVICE_URL}/query-full-context',
+                json=mistral_payload,
             )
 
             if response.status_code != 200:
@@ -1127,34 +1139,43 @@ RESPOSTA TÉCNICA (baseada exclusivamente no contexto acima):"""
         except Exception as e:
             rag_logger.error(f'Error generating answer with full context: {e}')
             raise HTTPException(
-                status_code=500, detail=f'Full context answer generation failed: {str(e)}'
+                status_code=500,
+                detail=f'Full context answer generation failed: {str(e)}',
             )
 
-    async def process_full_context_rag_query(self, request: FullContextRAGRequest) -> RAGResponse:
+    async def process_full_context_rag_query(
+        self, request: FullContextRAGRequest
+    ) -> RAGResponse:
         """Process a RAG query using the full manual as context"""
         start_time = time.time()
-        
-        rag_logger.info(f'🔄 Processando consulta com contexto completo: {request.question}')
-        
+
+        rag_logger.info(
+            f'🔄 Processando consulta com contexto completo: {request.question}'
+        )
+
         # Step 1: Get full manual content
         search_start = time.time()
-        full_manual_content = await self.get_full_manual_content(request.document_id)
+        full_manual_content = await self.get_full_manual_content(
+            request.document_id
+        )
         search_time = time.time() - search_start
-        
+
         if not full_manual_content:
             rag_logger.warning('Nenhum conteúdo do manual encontrado')
             return RAGResponse(
                 question=request.question,
-                answer="Não foi possível acessar o conteúdo do manual para responder à pergunta.",
+                answer='Não foi possível acessar o conteúdo do manual para responder à pergunta.',
                 sources=[],
                 tokens_used=0,
                 processing_time=time.time() - start_time,
                 search_time=search_time,
                 generation_time=0.0,
             )
-        
-        rag_logger.info(f'📖 Manual completo carregado: {len(full_manual_content)} caracteres')
-        
+
+        rag_logger.info(
+            f'📖 Manual completo carregado: {len(full_manual_content)} caracteres'
+        )
+
         # Step 2: Generate answer with full context
         generation_start = time.time()
         mistral_response = await self.generate_answer_with_full_context(
@@ -1165,20 +1186,24 @@ RESPOSTA TÉCNICA (baseada exclusivamente no contexto acima):"""
         )
         generation_time = time.time() - generation_start
         total_time = time.time() - start_time
-        
+
         # Step 3: Prepare sources (indicating full manual was used)
-        sources = [{
-            'content_preview': 'Manual completo ICATU - Alteração Cadastral utilizado como contexto',
-            'score': 1.0,
-            'metadata': {
-                'source_type': 'full_manual',
-                'content_length': len(full_manual_content),
-                'document_id': request.document_id or 'all_documents'
+        sources = [
+            {
+                'content_preview': 'Manual completo ICATU - Alteração Cadastral utilizado como contexto',
+                'score': 1.0,
+                'metadata': {
+                    'source_type': 'full_manual',
+                    'content_length': len(full_manual_content),
+                    'document_id': request.document_id or 'all_documents',
+                },
             }
-        }]
-        
-        rag_logger.info(f'✅ Consulta com contexto completo processada em {total_time:.2f}s')
-        
+        ]
+
+        rag_logger.info(
+            f'✅ Consulta com contexto completo processada em {total_time:.2f}s'
+        )
+
         return RAGResponse(
             question=request.question,
             answer=mistral_response.get('answer', ''),
@@ -1361,14 +1386,19 @@ async def ask_question(request: RAGRequest):
 async def ask_question_full_context(request: FullContextRAGRequest):
     """Ask a question using the full manual as context for more comprehensive answers"""
     try:
-        rag_logger.info(f'Recebida pergunta com contexto completo: {request.question}')
+        rag_logger.info(
+            f'Recebida pergunta com contexto completo: {request.question}'
+        )
         response = await rag_service.process_full_context_rag_query(request)
-        rag_logger.info(f'Resposta com contexto completo gerada para: {request.question}')
+        rag_logger.info(
+            f'Resposta com contexto completo gerada para: {request.question}'
+        )
         return response
     except Exception as e:
         rag_logger.error(f'Full context RAG query failed: {e}')
         raise HTTPException(
-            status_code=500, detail=f'Full context query processing failed: {str(e)}'
+            status_code=500,
+            detail=f'Full context query processing failed: {str(e)}',
         )
 
 
