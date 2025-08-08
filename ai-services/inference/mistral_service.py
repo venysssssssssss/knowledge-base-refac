@@ -60,8 +60,8 @@ MODEL_NAME = 'mistral:latest'
 class QueryRequest(BaseModel):
     question: str
     context: str = ''
-    max_tokens: int = 512
-    temperature: float = 0.7
+    max_tokens: int = 1024  # Aumentado de 512 para 1024
+    temperature: float = 0.3
     instructions: str = ''  # Novo campo para instruções específicas
 
 
@@ -148,6 +148,9 @@ async def query_model(request: QueryRequest):
                     'temperature': request.temperature,
                     'num_predict': request.max_tokens,
                     'top_p': 0.9,
+                    'num_ctx': 12288,  # Aumentado de default para suportar manual completo + índice
+                    'repeat_penalty': 1.1,  # Evitar repetições
+                    'stop': ['[Resposta truncada]', '...']  # Parar se detectar truncamento
                 },
             }
             response = await client.post(
@@ -284,11 +287,57 @@ INSTRUÇÕES CRÍTICAS:
 7. NÃO liste procedimentos extras que não foram perguntados
 8. Mantenha a resposta focada na pergunta específica
 9. IGNORE qualquer contexto adicional - use APENAS o manual oficial abaixo
+10. RESPONDA DE FORMA COMPLETA - NÃO truncar informações importantes
+11. Se encontrar um tópico específico (1-18), inclua TODA a informação desse tópico
+12. Use o ÍNDICE NAVEGACIONAL abaixo para localizar rapidamente as informações
 
-IMPORTANTE: Seja preciso e literal - copie as informações exatas do manual sem elaborar."""
+ESTRATÉGIA DE BUSCA:
+- Para perguntas sobre "quem pode": consulte o TÓPICO 1 e 9
+- Para perguntas sobre "como fazer/procedimento": consulte os TÓPICOS 2, 10, 17, 18
+- Para perguntas sobre "documentos necessários": consulte os TÓPICOS 2, 6, 17, 18
+- Para perguntas sobre "prazos": consulte os TÓPICOS 4, 8, 13, 16, 18
+- Para perguntas sobre "envio": consulte os TÓPICOS 3, 7, 11
+- Para perguntas sobre "sistemas específicos": consulte os TÓPICOS 12, 16, 17, 18
+
+IMPORTANTE: Seja preciso, literal e COMPLETO - copie as informações exatas do manual sem truncar."""
 
     # SEMPRE usa o manual completo hardcoded, independente dos chunks
     prompt = f"""<s>[INST] {final_instructions}
+
+ÍNDICE NAVEGACIONAL DO MANUAL ICATU - ALTERAÇÃO CADASTRAL:
+═══════════════════════════════════════════════════════════════
+
+📋 AUTORIZAÇÃO E PERMISSÕES:
+   • Tópico 1: Quem Pode Solicitar
+   • Tópico 9: Quem Pode Solicitar (detalhamento)
+
+📄 TIPOS DE ALTERAÇÕES:
+   • Tópico 2: Tipos de Alterações Cadastrais (a-e)
+   • Tópico 10: Tipos de Alterações e Procedimentos Específicos
+
+📤 DOCUMENTOS E ENVIO:
+   • Tópico 3: Envio de Documentos (Banrisul)
+   • Tópico 6: Interditado/Impossibilitado de Assinar
+   • Tópico 7: Envio de Documentos (Reforço)
+   • Tópico 11: Envio de Documentos (variações)
+
+⚙️ SISTEMA E REGISTRO:
+   • Tópico 4: Registro no Sistema
+   • Tópico 8: Registro no Sistema (Reforço)
+   • Tópico 12: Registro no Sistema (detalhado)
+
+🔧 PROCEDIMENTOS ESPECÍFICOS:
+   • Tópico 5: Alteração de CPF/Data de Nascimento
+   • Tópico 14: Cliente com Telefone sem Prefixo 9
+   • Tópico 15: Dados Atualizados Sistema vs Zendesk
+   • Tópico 16: Cliente com Dados Desatualizados
+   • Tópico 17: Alteração de CPF (Detalhamento)
+   • Tópico 18: Alteração de Data de Nascimento
+
+⏰ PRAZOS E TEMPO:
+   • Tópico 13: Prazos (até 24h, 07 dias úteis)
+
+═══════════════════════════════════════════════════════════════
 
 MANUAL COMPLETO ICATU - ALTERAÇÃO CADASTRAL:
 
@@ -563,14 +612,16 @@ Atualizações do Procedimento
 
 PERGUNTA DO AGENTE: {question}
 
-INSTRUÇÃO FINAL:
-- Localize NO TEXTO ACIMA a resposta EXATA para a pergunta
-- Responda APENAS com as informações literais encontradas
-- NÃO adicione explicações extras, procedimentos ou detalhes não solicitados
-- Seja DIRETO e use as palavras EXATAS do documento
-- Se não encontrar a informação específica, diga: "O documento não especifica esta informação"
+INSTRUÇÕES FINAIS PARA RESPOSTA:
+1. 🔍 CONSULTE O ÍNDICE NAVEGACIONAL acima para localizar rapidamente os tópicos relevantes
+2. 📖 LEIA COMPLETAMENTE os tópicos identificados no manual
+3. 📝 RESPONDA COM TODAS as informações encontradas - NÃO TRUNCAR
+4. 🎯 Use APENAS informações LITERAIS do texto acima
+5. ✅ Se encontrar procedimentos em múltiplos tópicos, combine-os de forma completa
+6. ⚠️ Se não encontrar informação específica, diga: "O manual não especifica esta informação"
+7. 📋 Para tópicos longos (como 17 e 18), inclua TODA a informação sem cortar
 
-RESPOSTA LITERAL (baseada EXCLUSIVAMENTE no texto acima): [/INST]"""
+RESPOSTA COMPLETA E LITERAL (baseada EXCLUSIVAMENTE no manual acima): [/INST]"""
     
     return prompt
 

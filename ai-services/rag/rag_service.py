@@ -62,8 +62,8 @@ DOCUMENT_PROCESSOR_URL = 'http://10.117.0.19:8001'
 
 class RAGRequest(BaseModel):
     question: str
-    max_tokens: int = 512
-    temperature: float = 0.7
+    max_tokens: int = 1024  # Aumentado de 512 para 1024
+    temperature: float = 0.3
     search_limit: int = 8
     score_threshold: float = 0.5
     document_id: str = None  # Novo campo opcional para filtrar por documento
@@ -1086,21 +1086,11 @@ RESPOSTA TÉCNICA (baseada exclusivamente no contexto acima):"""
             if not processed_answer.startswith('**'):
                 processed_answer = f'**PRAZOS:**\n{processed_answer}'
 
-        # Garantir que não seja muito longo
-        if len(processed_answer) > 800:
-            # Truncar preservando frases completas
-            sentences = processed_answer.split('.')
-            truncated = ''
-            for sentence in sentences:
-                if len(truncated + sentence + '.') <= 750:
-                    truncated += sentence + '.'
-                else:
-                    break
-            if truncated:
-                processed_answer = (
-                    truncated
-                    + '\n\n[Resposta truncada - consulte o documento completo para mais detalhes]'
-                )
+        # NÃO truncar respostas importantes - permitir respostas completas
+        # Especialmente importante para tópicos detalhados como 17 e 18
+        if len(processed_answer) > 1500:  # Limite aumentado significativamente
+            # Apenas avisar se muito longa, mas não truncar
+            rag_logger.warning(f'Resposta muito longa: {len(processed_answer)} caracteres')
 
         return processed_answer
 
