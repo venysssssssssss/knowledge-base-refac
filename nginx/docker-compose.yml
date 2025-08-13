@@ -2,6 +2,6 @@ services:
   proxy:
     image: nginx:latest
     container_name: unified-proxy
-    volumes:
-      - ./conf.d:/etc/nginx/conf.d:ro
     network_mode: host
+    security_opt:
+      - seccomp=unconfined
