@@ -84,6 +84,10 @@ async function handleAIRequest(
       // RAG queries - redireciona para o RAG service usando endpoint /ask
       return proxyToAI(AI_SERVICES.rag, request, '/ask');
       
+    case 'query-full':
+      // RAG queries with full context - usa todo o manual como contexto
+      return proxyToAI(AI_SERVICES.rag, request, '/ask-full-context');
+      
     case 'upload':
       // Document upload - redireciona para document processor
       return proxyToAI(AI_SERVICES.document, request, '/upload-pdf');
@@ -101,6 +105,10 @@ async function handleAIRequest(
       const mistralEndpoint = endpoint || '/query';
       return proxyToAI(AI_SERVICES.mistral, request, mistralEndpoint);
       
+    case 'mistral-full':
+      // Direct Mistral access with full context
+      return proxyToAI(AI_SERVICES.mistral, request, '/query-full-context');
+      
     case 'rag':
       // Direct RAG access - mapeia /query para /ask
       const ragEndpoint = endpoint === '/query' ? '/ask' : (endpoint || '/ask');
@@ -114,7 +122,7 @@ async function handleAIRequest(
       return NextResponse.json(
         { 
           error: 'Unknown AI service', 
-          available: ['query', 'upload', 'search', 'health', 'mistral', 'rag', 'document']
+          available: ['query', 'query-full', 'upload', 'search', 'health', 'mistral', 'mistral-full', 'rag', 'document']
         },
         { status: 404 }
       );

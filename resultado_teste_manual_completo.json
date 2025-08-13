@@ -1,0 +1,122 @@
+[
+  {
+    "teste": 1,
+    "topico": "1 - Quem Pode Solicitar",
+    "pergunta": "Quem pode solicitar alterações cadastrais?",
+    "resposta": "Somente o cliente pode solicitar alterações cadastrais.",
+    "esperado": "titular da apólice",
+    "status": "FALHA",
+    "tempo": 1.0106239318847656,
+    "tokens": 9
+  },
+  {
+    "teste": 2,
+    "topico": "2a - Documento de Identificação / Nome / Estado Civil",
+    "pergunta": "Quais documentos são exigidos para alteração de nome?",
+    "resposta": "Nome: Copie e cole o seguinte trecho do texto: \"Para alteração de nome, o documento exigido é um print da Receita Federal com a nova identidade.\"",
+    "esperado": "cópia do documento de identificação com foto",
+    "status": "FALHA",
+    "tempo": 1.2927031517028809,
+    "tokens": 33
+  },
+  {
+    "teste": 3,
+    "topico": "2b - Nome Social",
+    "pergunta": "Qual é a base legal para nome social?",
+    "resposta": "A base legal para o nome social é descrita na seção de Capitalização do manual. O nome social pode ser alterado seguindo os mesmos critérios já descritos nessa seção, onde a base legal não é especificada explicitamente, mas é inferida através dos procedimentos descritos para alterar o nome social.",
+    "esperado": "Ofício-Circular nº 001/2024/DIR2/SUSEP",
+    "status": "FALHA",
+    "tempo": 1.5466833114624023,
+    "tokens": 63
+  },
+  {
+    "teste": 4,
+    "topico": "2c - Endereço / Telefone / E-mail",
+    "pergunta": "Como é feita a alteração de endereço?",
+    "resposta": "Alteração de endereço é feita diretamente no sistema.",
+    "esperado": "Alteração feita diretamente no sistema",
+    "status": "FALHA",
+    "tempo": 0.9761559963226318,
+    "tokens": 10
+  },
+  {
+    "teste": 5,
+    "topico": "3 - Envio de Documentos",
+    "pergunta": "Qual o email para envio de documentos do Banrisul?",
+    "resposta": "Rua Formosa, 1234 - São Paulo/SP\nCep: 01311-900\nEmail: [clientes@banrisul.com.br](mailto:clientes@banrisul.com.br)",
+    "esperado": "formularioscap@riograndeseguradora.com.br",
+    "status": "FALHA",
+    "tempo": 1.4359567165374756,
+    "tokens": 13
+  },
+  {
+    "teste": 6,
+    "topico": "4 - Registro no Sistema",
+    "pergunta": "Qual o prazo para conclusão de solicitações?",
+    "resposta": "O prazo geral para conclusão da solicitação é de 07 dias úteis.",
+    "esperado": "07 dias úteis",
+    "status": "SUCESSO",
+    "tempo": 1.0679385662078857,
+    "tokens": 15
+  },
+  {
+    "teste": 7,
+    "topico": "5 - Alteração de CPF / Data de Nascimento",
+    "pergunta": "Como validar dados do CPF?",
+    "resposta": "Para validar dados do CPF, seguir os passos descritos na seção de Capitalização e Previdência:\n\n1. Confirmar o dado com o cliente.\n2. Validar no site da Receita Federal.\n\nO documento não especifica detalhes sobre como validar dados do CPF no site da Receita Federal.",
+    "esperado": "site da Receita Federal",
+    "status": "SUCESSO",
+    "tempo": 1.5868268013000488,
+    "tokens": 58
+  },
+  {
+    "teste": 8,
+    "topico": "6a - Interditado",
+    "pergunta": "Quais documentos são necessários para interditado?",
+    "resposta": "Cenário: Interditado\n\nDocumentos necessários:\n- Formulário específico (não especificado no manual)\n- Documento de identificação (CPF não especificado)",
+    "esperado": "Cópia do RG e CPF",
+    "status": "FALHA",
+    "tempo": 1.304250955581665,
+    "tokens": 23
+  },
+  {
+    "teste": 9,
+    "topico": "14 - Cliente com Telefone Celular sem Prefixo 9",
+    "pergunta": "O que fazer quando cliente tem telefone sem prefixo 9?",
+    "resposta": "Verificação: Se o número de celular não possui o dígito 9, ele deve ser incluído.\nOnde alterar:\nPara um único cliente: diretamente no Zendesk.\nPara múltiplos clientes: diretamente no sistema do produto.\nNão é necessário realizar identificação positiva ou autenticação de segurança nesses casos.",
+    "esperado": "incluído",
+    "status": "SUCESSO",
+    "tempo": 1.756964921951294,
+    "tokens": 57
+  },
+  {
+    "teste": 10,
+    "topico": "15 - Cliente com Dados Atualizados no Sistema",
+    "pergunta": "Como sincronizar dados entre sistema e Zendesk?",
+    "resposta": "A sincronização entre sistema e Zendesk é feita da seguinte maneira:\n\n1. Se os dados estão atualizados no sistema, mas desatualizados no Zendesk, copiar os dados corretos do sistema para o Zendesk. Se houver erro ao gravar, realizar uma pequena alteração no sistema (ex: abreviações como “Rua” → “R.”) para forçar a sincronização.\n\n2. Caso haja dados desatualizados tanto no sistema quanto no Zendesk sem advertência, seguir o fluxo de Token/Rating/Score (autenticação). Se aprovado, realizar a alteração diretamente no Zendesk. Se o app não permitir alteração, verificar se há mais de um cadastro com datas de nasc",
+    "esperado": "Copiar os dados corretos do sistema para o Zendesk",
+    "status": "SUCESSO",
+    "tempo": 2.692540168762207,
+    "tokens": 126
+  },
+  {
+    "teste": 11,
+    "topico": "17 - Alteração de CPF (Detalhamento)",
+    "pergunta": "Qual sistema usar para alteração de CPF no PGBL?",
+    "resposta": "O sistema para alteração de CPF no PGBL é o SISPREV.",
+    "esperado": "PGBL/SISPREV",
+    "status": "FALHA",
+    "tempo": 1.0101308822631836,
+    "tokens": 14
+  },
+  {
+    "teste": 12,
+    "topico": "18 - Alteração de Data de Nascimento",
+    "pergunta": "Em quanto tempo reflete alteração de data de nascimento?",
+    "resposta": "O prazo para refletir a alteração de data de nascimento no site e Zendesk é até 24 horas.",
+    "esperado": "até 24 horas",
+    "status": "SUCESSO",
+    "tempo": 1.1861605644226074,
+    "tokens": 23
+  }
+]

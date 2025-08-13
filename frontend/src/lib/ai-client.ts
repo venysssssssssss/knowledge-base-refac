@@ -33,6 +33,7 @@ interface RAGResponse {
   sources: Array<{
     content: string;
     metadata: {
+      chunk_index: any;
       filename: string;
       page?: number;
     };

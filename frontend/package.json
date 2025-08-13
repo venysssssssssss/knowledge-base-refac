@@ -11,10 +11,11 @@
     "test:chat:simple": "node ../scripts/run-chat-tests.js --simple"
   },
   "dependencies": {
+    "@heroicons/react": "^2.2.0",
     "@types/ioredis": "^5.0.0",
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
-    "framer-motion": "^12.23.11",
+    "framer-motion": "^12.23.12",
     "idb": "^8.0.3",
     "ioredis": "^5.7.0",
     "next": "15.4.4",

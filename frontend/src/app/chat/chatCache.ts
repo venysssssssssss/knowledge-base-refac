@@ -12,7 +12,7 @@ interface Message {
 interface Attachment {
     id: string;
     name: string;
-    type: 'pdf' | 'image' | 'document' | 'spreadsheet' | 'presentation';
+    type: 'pdf' | 'image' | 'document' | 'spreadsheet' | 'presentation' | 'text';
     size: number;
     progress?: number;
     extension?: string;
@@ -142,4 +142,28 @@ const getFileType = (file: File): Attachment['type'] => {
 
 const getFileExtension = (fileName: string): string => {
     return fileName.split('.').pop()?.toLowerCase() || '';
+};
+
+/**
+ * Limpa completamente o cache do chat
+ * Remove todas as mensagens e anexos armazenados
+ */
+export const clearAllChatCache = async (): Promise<void> => {
+    try {
+        const db = await getDB();
+        const tx = db.transaction(['messages', 'attachments'], 'readwrite');
+        
+        // Limpar todas as mensagens
+        await tx.objectStore('messages').clear();
+        
+        // Limpar todos os anexos
+        await tx.objectStore('attachments').clear();
+        
+        await tx.done;
+        
+        console.log('✅ Cache do chat limpo com sucesso!');
+    } catch (error) {
+        console.error('❌ Erro ao limpar cache do chat:', error);
+        throw error;
+    }
 };
