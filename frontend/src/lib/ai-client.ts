@@ -76,7 +76,7 @@ class AIClient {
 
   constructor(config?: Partial<AIServiceConfig>) {
     this.config = {
-      baseUrl: (typeof window !== 'undefined' ? window.location.origin : 'http://localhost:3000') + '/api/ai',
+      baseUrl: (typeof window !== 'undefined' ? window.location.origin : 'http://localhost:3000'),
       timeout: 30000,
       retries: 3,
       retryDelay: 1000,
