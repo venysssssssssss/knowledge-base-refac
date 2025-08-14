@@ -108,7 +108,7 @@ class AIClient {
       const request = job.data as RAGRequest;
       console.log(`🤖 Processando pergunta RAG: "${request.question.substring(0, 50)}..."`);
       
-      return this.makeDirectRequest('/rag/query', {
+      return this.makeDirectRequest('/api/rag-service/query', {
         method: 'POST',
         body: JSON.stringify(request),
       });
@@ -121,7 +121,7 @@ class AIClient {
       const results = [];
       for (const job of jobs) {
         try {
-          const result = await this.makeDirectRequest('/rag/query', {
+          const result = await this.makeDirectRequest('/api/rag-service/query', {
             method: 'POST',
             body: JSON.stringify(job.data),
           });
