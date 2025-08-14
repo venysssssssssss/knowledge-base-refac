@@ -2,9 +2,9 @@ import { NextRequest, NextResponse } from 'next/server';
 
 // AI Services configuration
 const AI_SERVICES = {
-  rag: process.env.RAG_SERVICE_URL || 'http://localhost:8002',
-  document: process.env.DOCUMENT_SERVICE_URL || 'http://localhost:8001',
-  mistral: process.env.MISTRAL_SERVICE_URL || 'http://localhost:8003',
+  rag: process.env.RAG_SERVICE_URL || 'http://10.117.0.19:8002',
+  document: process.env.DOCUMENT_SERVICE_URL || 'http://10.117.0.19:8001',
+  mistral: process.env.MISTRAL_SERVICE_URL || 'http://10.117.0.19:8003',
 };
 
 // Simple auth check function - implement your actual auth logic here
